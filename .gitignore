@@ -1,0 +1,27 @@
+# OS
+.DS_Store
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Local runtime data
+data/*
+!data/.gitkeep
+
+# Local runtime/config dirs
+.codex-home/
+.codex/
+
+# Build artifacts
+dist/
+build/
+*.log
+*.pid

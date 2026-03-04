@@ -1,0 +1,28 @@
+{
+  "name": "termbot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Telegram terminal bot with persistent Codex sessions and mini-app live panel",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "bot": "node bot.js",
+    "bot:start": "node scripts/codexbot-cli.js bot start",
+    "bot:stop": "node scripts/codexbot-cli.js bot stop",
+    "bot:status": "node scripts/codexbot-cli.js bot status",
+    "bot:ask": "node scripts/codexbot-cli.js bot ask",
+    "bot:new": "node scripts/codexbot-cli.js bot new",
+    "bot:cancel": "node scripts/codexbot-cli.js bot cancel",
+    "bot:repl": "node scripts/codexbot-cli.js bot repl",
+    "bot:logs": "node scripts/codexbot-cli.js bot logs",
+    "test:miniapp": "node --test scripts/tests/miniapp-render.test.js",
+    "bot:tunnel": "cloudflared tunnel --url http://127.0.0.1:8787",
+    "postinstall": "node scripts/fix-node-pty-perms.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^4.19.2",
+    "node-pty": "^1.0.0",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}

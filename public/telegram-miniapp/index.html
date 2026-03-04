@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>TermBot Mini App</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=Instrument+Serif:ital@0;1&family=Sora:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/telegram-miniapp/styles.css" />
+  </head>
+  <body data-design="focus">
+    <div class="backdrop backdrop-a" aria-hidden="true"></div>
+    <div class="backdrop backdrop-b" aria-hidden="true"></div>
+
+    <main class="miniapp-shell">
+      <header class="app-header">
+        <div class="header-copy">
+          <p class="kicker">TermBot Mini App</p>
+          <h1>Command Center</h1>
+          <p id="subline" class="subline">Verbindung wird aufgebaut...</p>
+        </div>
+
+        <div class="header-state">
+          <div id="statusBadge" class="status-badge thinking">thinking ...</div>
+          <p id="runtime" class="runtime-badge">0m 0s</p>
+        </div>
+
+      </header>
+
+      <section class="main-stack">
+        <section class="panel detail-panel">
+          <div class="tab-row" role="tablist" aria-label="Detailansicht">
+            <button id="tabAnswer" type="button" class="tab-btn is-active" data-tab-target="answer">Codex</button>
+            <button id="tabRaw" type="button" class="tab-btn" data-tab-target="raw">Raw</button>
+            <button id="tabEvents" type="button" class="tab-btn" data-tab-target="events">Events</button>
+            <button id="tabSystem" type="button" class="tab-btn" data-tab-target="system">System</button>
+          </div>
+
+          <section id="panelAnswer" class="tab-panel is-active" data-tab-panel="answer">
+            <div class="panel-head">
+              <h2>Codex Stream</h2>
+            </div>
+            <section id="replyControls" class="reply-controls" hidden>
+              <p id="replyPrompt" class="reply-prompt">Rueckfrage erkannt.</p>
+              <div class="reply-actions">
+                <button type="button" class="reply-btn" data-reply-action="yes">yes</button>
+                <button type="button" class="reply-btn" data-reply-action="yes_always">yes always</button>
+                <button type="button" class="reply-btn danger" data-reply-action="no_but">no but...</button>
+              </div>
+              <form id="replyReasonForm" class="reply-reason" hidden>
+                <label class="reply-reason-label" for="replyReasonInput">Reason (required for "no but...")</label>
+                <textarea
+                  id="replyReasonInput"
+                  class="reply-reason-input"
+                  rows="2"
+                  maxlength="1200"
+                  placeholder="Write your reason..."
+                ></textarea>
+                <div class="reply-reason-actions">
+                  <button id="replyReasonSendBtn" type="submit" class="reply-btn danger">Send no but...</button>
+                  <button id="replyReasonCancelBtn" type="button" class="reply-btn">Cancel</button>
+                </div>
+              </form>
+            </section>
+            <article id="answerView" class="answer-feed" aria-live="polite">Warte auf Daten...</article>
+          </section>
+
+          <section id="panelSystem" class="tab-panel" data-tab-panel="system">
+            <section class="system-task">
+              <h2>Task</h2>
+              <div class="system-task-actions">
+                <button id="startBtn" type="button">Start</button>
+                <button id="cancelBtn" type="button" class="danger">Stop Codex</button>
+                <button id="restartBtn" type="button">Restart Bot</button>
+              </div>
+            </section>
+            <dl id="systemGrid" class="system-grid"></dl>
+          </section>
+
+          <section id="panelEvents" class="tab-panel" data-tab-panel="events">
+            <div id="events" class="events-list">-</div>
+          </section>
+
+          <section id="panelRaw" class="tab-panel" data-tab-panel="raw">
+            <pre id="screen" class="screen">Warte auf Daten...</pre>
+          </section>
+        </section>
+      </section>
+
+      <form id="inputForm" class="composer-dock" autocomplete="off">
+        <label class="composer-label" for="promptInput">Prompt</label>
+        <textarea
+          id="promptInput"
+          class="prompt-input"
+          placeholder="Nachricht an TermBot senden..."
+          rows="2"
+          maxlength="4000"
+        ></textarea>
+        <div class="composer-actions">
+          <button id="escBtn" type="button" class="danger">ESC</button>
+          <button id="sendBtn" type="submit" class="primary">SEND</button>
+        </div>
+      </form>
+    </main>
+
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="/telegram-miniapp/render.js"></script>
+    <script src="/telegram-miniapp/app.js"></script>
+  </body>
+</html>
