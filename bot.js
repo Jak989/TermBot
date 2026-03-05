@@ -2034,23 +2034,15 @@ async function notifyTurnThinking(run) {
 function codexRuntimeCommandMessage(run) {
   const lines = [
     `Codex started (${run.sessionName}).`,
-    "Controls while codex is running:",
-    "- regular text => send to codex",
-    "- /ask <text> => send prompt directly to codex",
-    "- /enter => send Enter",
-    "- /raw <text> => send raw text without Enter",
-    "- /status => runtime status",
-    "- /stopcodex => stop codex session",
-    "- /cancel => alias for /stopcodex",
-    "- /codexstart => start codex (when idle)",
-    "- /panel => open large live panel",
-    "",
-    "Note: Chat gets only essential final answer (system lines filtered).",
-    "Live Codex output appears in the Mini App panel.",
+    "Quick controls:",
+    "- text or /ask <text> -> send input",
+    "- /enter | /raw <text>",
+    "- /status | /stopcodex | /panel",
+    "- /help for full command list",
     `Profile auto-load: ${run.personalityStatus || "n/a"}`,
   ];
   if (BOT_ENABLE_RESTART_COMMAND) {
-    lines.splice(8, 0, "- /restartbot => restart bot process");
+    lines.splice(5, 0, "- /restartbot");
   }
   return lines.join("\n");
 }
@@ -2823,68 +2815,56 @@ async function startCodexTmuxRun(chatId, command, options = {}) {
 }
 
 function startMessage() {
-  const profilePath = resolvePersonalityFilePath(BOT_PERSONALITY_FILE);
-  const profileExists = fs.existsSync(profilePath);
   const webApp = getWebAppReadiness();
-  const profileReady = isUserProfileComplete(userProfile);
   const lines = [
-    `Telegram Terminal Bot is ready. Ich bin ${assistantDisplayName()}.`,
+    `Bereit. Ich bin ${assistantDisplayName()}.`,
     "",
-    "Global commands:",
+    "Schnellstart:",
+    "- /codexstart oder /ask <text>",
+    "- /panel, /projects, /status",
+    "- /stopcodex (oder /cancel)",
+    "- /timer, /remind, /daily, /reminders",
+    "- /voice",
+    "",
+    "Mehr Details: /help",
+    `CWD: ${lastKnownCwd}`,
+    `Codex backend: ${BOT_CODEX_BACKEND}`,
+    `Voice: ${buildVoiceReadiness().reason}`,
+    `Mini App: ${webApp.ok ? "ready" : webApp.reason}`,
+  ];
+  if (BOT_ENABLE_RESTART_COMMAND) {
+    lines.splice(10, 0, "- /restartbot");
+  }
+  return lines.join("\n");
+}
+
+function helpMessage() {
+  const webApp = getWebAppReadiness();
+  const lines = [
+    "Befehle:",
     "- /start",
     "- /setupassistant",
     "- /codexstart",
     "- /ask <text>",
-    "- (Start menu) Previous sessions",
-    "- /codexskip",
-    "- /panel",
-    "- /panelstatus",
+    "- /panel, /panelstatus",
     "- /projects",
     "- /voice",
-    "- /timer 25m Fokusblock",
-    "- /remind 18:30 Nachricht",
-    "- /daily 09:00 Nachricht",
-    "- /terminal 09:00",
-    "- /reminders",
-    "- /remindoff <id>",
-    "- /status",
-    "- /pwd",
-    "- /stopcodex",
-    "- /cancel (alias)",
+    "- /timer <dauer> <text>",
+    "- /remind <hh:mm> <text>",
+    "- /daily <hh:mm> <text>",
+    "- /terminal <hh:mm>",
+    "- /reminders, /remindoff <id>",
+    "- /status, /pwd, /stopcodex, /cancel",
     "",
-    "Idle mode:",
-    "- normal text => shell command",
-    "- voice note/audio => transcribe and process like text",
-    "- command starting with `codex` => tmux interactive codex mode",
-    "- /ask <text> => starts codex if needed and sends prompt",
+    "Modi:",
+    "- Idle: normaler Text = Shell-Command",
+    "- Laufende Codex-Session: normaler Text = Eingabe an Codex",
+    "- Voice/Audio: wird transkribiert und wie Text verarbeitet",
     "",
-    "While codex is running:",
-    "- normal text => stdin line (spaces preserved)",
-    "- /enter => submit with fallback (CR -> LF -> CRLF)",
-    "- /raw <text> => send raw text without enter",
-    "- /stopcodex => stop codex session",
-    "- /cancel => alias for /stopcodex",
-    "- /codexstart => start codex (when idle)",
-    "- Turn status: `thinking ...` while processing, `done` when finished",
-    "- Codex output appears in the Mini App panel (no live stream in chat)",
-    "",
-    "Mini App:",
-    "- /panel => sends WebApp button",
-    "- /panelstatus => shows URL/menu/API status",
-    "- in the Mini App: structured answers + raw view, SEND + ESC controls, Start/Stop Codex in System tab",
-    `- Startup: auto codex ${BOT_AUTO_START_CODEX ? "on" : "off"}, auto panel ${BOT_STARTUP_SEND_PANEL ? "on" : "off"}`,
-    "",
-    `Shell: ${RESOLVED_BOT_SHELL}`,
-    `CWD: ${lastKnownCwd}`,
-    `Codex backend: ${BOT_CODEX_BACKEND}`,
-    `Voice: ${buildVoiceReadiness().reason}`,
-    `Profile setup: ${profileReady ? "complete" : "pending"} (owner=${profileDisplayName()}, tone=${toneLabel(userProfile.tone)})`,
-    `Profile: auto ${BOT_PERSONALITY_AUTO_APPLY ? "on" : "off"} (${profileExists ? "found" : "missing"}: ${path.basename(profilePath)})`,
     `Mini App: ${webApp.ok ? "ready" : webApp.reason}`,
   ];
   if (BOT_ENABLE_RESTART_COMMAND) {
-    lines.splice(14, 0, "- /restartbot (restart bot)");
-    lines.splice(34, 0, "- /restartbot => restart bot process");
+    lines.splice(14, 0, "- /restartbot");
   }
   return lines.join("\n");
 }
@@ -2980,7 +2960,6 @@ async function sendStartupFlow() {
   const startupChatId = toTelegramChatId(resolveStartupChatId());
   if (!startupChatId) return;
 
-  await sendAsciiBanner(startupChatId);
   await sendMessage(startupChatId, "Bot started on your Mac.");
   const promptedOnboarding = await maybePromptProfileOnFirstStart(startupChatId);
   if (promptedOnboarding) {
@@ -3239,6 +3218,7 @@ async function configureTelegramCommands() {
   try {
     await bot.setMyCommands([
       { command: "start", description: "Show help and start options" },
+      { command: "help", description: "Show command reference" },
       { command: "setupassistant", description: "Set name, tone and preferences" },
       { command: "codexstart", description: "Start a Codex session" },
       { command: "ask", description: "Send prompt directly to Codex" },
@@ -3712,9 +3692,13 @@ bot.on("message", async (msg) => {
   }
 
   if (normalized === "/start" || normalized.startsWith("/start@")) {
-    await sendAsciiBanner(chatId);
     await sendMessage(chatId, startMessage());
     await sendStartCodexPrompt(chatId);
+    return;
+  }
+
+  if (lowered === "/help" || lowered === "/hilfe") {
+    await sendMessage(chatId, helpMessage());
     return;
   }
 
@@ -3834,7 +3818,7 @@ bot.on("message", async (msg) => {
     }
 
     if (normalized.startsWith("/")) {
-      await sendMessage(chatId, "Unknown runtime command. Use /status, /stopcodex, /enter, /raw <text>.");
+      await sendMessage(chatId, "Unknown runtime command. /status | /enter | /raw <text> | /stopcodex");
       return;
     }
 
@@ -3886,7 +3870,7 @@ bot.on("message", async (msg) => {
   if (!normalized) return;
 
   if (normalized.startsWith("/")) {
-    await sendMessage(chatId, "Unknown command. Use /start for help.");
+    await sendMessage(chatId, "Unknown command. Use /help.");
     return;
   }
 

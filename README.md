@@ -81,6 +81,13 @@ npm run bot
 - `/daily 09:00 Nachricht`
 - `/reminders`
 
+## Telegram Chat Commands
+
+- `/start` kompakter Schnellstart + Start-Menue
+- `/help` kompakte Befehlsliste
+- `/ask <text>` Prompt an aktive/neue Codex-Session
+- `/status`, `/stopcodex`, `/panel`, `/projects`, `/voice`
+
 ## Mini-App API
 
 Bei aktivierter Mini-App:

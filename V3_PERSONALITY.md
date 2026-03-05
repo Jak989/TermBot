@@ -108,10 +108,10 @@ Test-Mindeststandard:
 - [ ] Rollout-Plan inkl. Fallback erstellt
 
 <!-- BOT_PROFILE_START -->
-## Persoenliche Praeferenzen (automatisch gepflegt)
-- Nutzername: <unset>
-- Assistentenname: <unset>
-- Kommunikationsstil: <unset>
-- Eigene Preferences: 0
-- Zuletzt aktualisiert: <unset>
+## Persönliche Präferenzen (automatisch gepflegt)
+- Nutzername: JD
+- Assistentenname: Schenni
+- Kommunikationsstil: leger
+- Eigene Preferences: 3
+- Zuletzt aktualisiert: 2026-03-03T22:25:59.246Z
 <!-- BOT_PROFILE_END -->
