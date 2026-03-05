@@ -1,137 +1,112 @@
 # TermBot
 
-**TermBot ist ein Telegram-gesteuertes Terminal Command Center.**
+TermBot ist ein Telegram-Bot fuer dein lokales Terminal, der gleichzeitig als persoenlicher Assistant arbeitet.
 
-Es steuert deine lokale Shell remote, fuehrt normale Terminal-Aufgaben aus und hat einen spezialisierten Codex-Modus fuer laengere AI-Workflows direkt im Terminal.
+Der entscheidende Unterschied: **Sobald Codex laeuft, unterhaeltst du dich im Chat mit deinem Assistant** und laesst ihn Aufgaben erledigen, statt nur rohe Shell-Kommandos zu schicken.
 
-## Warum TermBot besser ist
+## Was TermBot besonders macht
 
-- Ein Bot fuer **alles im Terminal**, nicht nur fuer Chat-Kommandos.
-- Spezieller **Codex-Betrieb mit persistenter Session** (tmux), damit lange Tasks nicht verloren gehen.
-- **Mini-App Command Center** mit Live-Ansicht, Raw-Output, Events und Systemstatus.
-- **Sicherheitsgrenzen eingebaut** (Telegram User-Allowlist, signierte Mini-App Requests, Rate Limits).
-- **Produktiv im Alltag**: Reminder, Daily Jobs, Projektkontext-Restore, Voice-Input, optional Notion-Sync.
+- Terminal-Steuerung per Telegram fuer deinen lokalen Rechner
+- Assistant-Modus ueber Codex fuer echte Zusammenarbeit im Chat
+- Eigene Persoenlichkeit pro User (`/setupassistant`)
+- Merkt sich deine Vorlieben dauerhaft (Name, Ton, Preferences)
+- Reminder, Daily-Routinen und Projekt-Kontext in einem Bot
+- Mini-App Command Center mit Live-Ausgabe, Events und Systemstatus
 
-## Capabilities
+## Der Bot im Alltag
 
-### A) General Terminal Control
+Nach `/codexstart` oder `/ask <text>` nutzt du TermBot wie einen Assistant:
 
-- Idle-Modus: normale Telegram-Nachricht -> Shell/Terminal-Input
-- konfigurierbares Arbeitsverzeichnis (`BOT_CWD`) und Shell (`BOT_SHELL`)
-- Runtime-Befehle: `/status`, `/pwd`, `/cancel`, `/stopcodex`
-- Fokus-/Zeit-Workflows:
-  - `/timer 25m Fokusblock`
-  - `/remind 18:30 Nachricht`
-  - `/daily 09:00 Nachricht`
-  - `/terminal 09:00`
-  - `/reminders`, `/remindoff <id>`
+- "Plane meinen Tag und setze mir 2 Erinnerungen"
+- "Fasse meine offenen Tasks zusammen"
+- "Erstelle mir die naechsten 3 Schritte fuer dieses Projekt"
+- "Erinnere mich taeglich 09:00 an den Terminal-Check"
 
-### B) Codex Specialist Mode
+Du chattest normal weiter, und TermBot arbeitet die Aufgaben in der laufenden Session ab.
 
-- `/codexstart` startet interaktive Codex-Session
-- `/ask <text>` startet Codex bei Bedarf und sendet Prompt direkt
-- persistente Session via tmux (`BOT_CODEX_BACKEND=tmux`)
-- waehrend Codex laeuft:
-  - Nachricht -> stdin Zeile
-  - `/enter` -> Enter mit Fallback-Sequenz (CR -> LF -> CRLF)
-  - `/raw <text>` -> Rohtext ohne Enter
-  - `/stopcodex` / `/cancel` -> Session stoppen
-- Turn-Monitoring mit `thinking ...` und `done` Semantik
+## Persoenlichkeit und Memory
 
-### C) Mini-App Command Center
+Mit `/setupassistant` konfigurierst du:
 
-- Tabs: **Codex**, **Raw**, **Events**, **System**
-- Live Snapshot + strukturierte Antwortdarstellung + Raw-Ausgabe
-- direkte Eingaben (SEND/ESC), Start/Stop Codex, optional Restart-Bot
-- Reply-Quick-Actions bei Rueckfragen (`yes`, `yes always`, `no but...`)
-- Endpunkte:
-  - `GET /api/miniapp/live`
-  - `POST /api/miniapp/input`
+- deinen Namen
+- den Namen des Assistants
+- Kommunikationsstil (formal/leger/custom)
+- eigene Preferences
 
-### D) Voice + Knowledge Sync
+TermBot speichert das lokal in `data/user-profile.json` und synchronisiert den Profilblock in `V3_PERSONALITY.md`.
+Bei neuen Codex-Sessions wird dieses Profil automatisch als Verhalten geladen (konfigurierbar ueber `BOT_PERSONALITY_AUTO_APPLY`).
 
-- Voice Notes / Audio -> Transkription -> normale Bot-Verarbeitung
-- konfigurierbare Transkriptionspipeline (`python3` + skill script)
-- optional Notion Activity Sync (API oder MCP-Modus) mit Retry-Queue
+## Feature Matrix
 
-## Architektur
+| Bereich | Was du bekommst |
+|---|---|
+| Terminal Control | Shell/Terminal-Steuerung aus Telegram im Idle-Modus |
+| Codex Assistant | Interaktive, persistente Codex-Session via tmux |
+| Chat Collaboration | Normale Chat-Nachrichten werden waehrend Codex-Lauf als Input verarbeitet |
+| Productivity | `/timer`, `/remind`, `/daily`, `/terminal`, `/reminders`, `/remindoff` |
+| Project Context | `/projects` fuer letzte Projektkontexte und Restore |
+| Mini App | Tabs fuer Codex, Raw, Events, System + direkte Eingaben |
+| Voice | Audio/Voice -> Transkript -> Verarbeitung wie Text |
+| Notion Sync (optional) | Aktivitaeten als Notion-Eintraege (API oder MCP) |
 
-- `bot.js` Telegram-Controller + Session-Orchestrierung + Mini-App API
-- `scripts/codexbot-daemon.js` lokaler Daemon fuer langlebige Codex-Runs
-- `scripts/codexbot-cli.js` CLI (`start|stop|status|ask|new|cancel|repl|logs`)
-- `public/telegram-miniapp/*` Frontend fuer das Live-Panel
-- `data/` lokale Laufzeitdaten (logs, state, reminders, profile, activity)
+## Kern-Kommandos
+
+- `/start` Hilfe und Startpanel
+- `/setupassistant` Assistant-Profil einrichten
+- `/codexstart` Codex-Session starten
+- `/ask <text>` Prompt direkt an Codex
+- `/projects` letzte Projekte/Sessions
+- `/panel` Mini-App Button senden
+- `/panelstatus` Mini-App/Tunnel/API Status
+- `/status`, `/pwd`, `/stopcodex`, `/cancel`
+- `/timer`, `/remind`, `/daily`, `/terminal`, `/reminders`, `/remindoff`
 
 ## Quick Start
 
 ```bash
 npm install
 cp .env.example .env
+npm run bot
 ```
 
-### Minimal benoetigt
+Mindestens setzen in `.env`:
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_ALLOWED_USER_ID`
 - `BOT_CWD=/absoluter/pfad/zum/projekt`
 
-### Empfohlen
+Empfohlen fuer vollen Assistant-Betrieb:
 
 - `BOT_CODEX_BACKEND=tmux`
-- `BOT_WEBAPP_ENABLE=1`
-- `BOT_WEBAPP_URL=https://...` (Telegram Mini-App URL)
 - `BOT_AUTO_START_CODEX=1`
-- `BOT_STARTUP_SEND_PANEL=1`
+- `BOT_PROMPT_ON_START=1`
+- `BOT_PERSONALITY_AUTO_APPLY=1`
+- `BOT_WEBAPP_ENABLE=1`
+- `BOT_WEBAPP_URL=https://...`
 
-Start:
+## Architektur
 
-```bash
-npm run bot
-```
+- `bot.js`: Telegram Controller, Session-Orchestrierung, Reminder, Profile, Mini-App API
+- `scripts/codexbot-daemon.js`: lokaler Daemon fuer langlebige Codex-Runs
+- `scripts/codexbot-cli.js`: lokale CLI (`start|stop|status|ask|new|cancel|repl|logs`)
+- `public/telegram-miniapp/*`: WebApp Command Center
+- `data/`: lokale Laufzeitdaten (state, logs, reminders, profile)
 
-## Telegram Command Reference
+## Sicherheit
 
-- `/start` Hilfe + Startstatus
-- `/setupassistant` Setup fuer Namen/Ton/Preferences
-- `/codexstart` Codex starten
-- `/ask <text>` Prompt direkt an Codex
-- `/panel` Mini-App Button senden
-- `/panelstatus` Mini-App Konfiguration anzeigen
-- `/projects` letzte Projektkontexte anzeigen/wiederherstellen
-- `/voice` Voice-Pipeline Status
-- `/timer`, `/remind`, `/daily`, `/terminal`, `/reminders`, `/remindoff`
-- `/status`, `/pwd`, `/stopcodex`, `/cancel`
+- Zugriff nur fuer `TELEGRAM_ALLOWED_USER_ID`
+- Mini-App Requests werden per Telegram `initData` validiert
+- Rate Limits fuer Live/Input API
+- Secrets nur in `.env`, nie committen
+- Laufzeitdaten bleiben lokal in `data/`
 
-## CLI / Daemon Usage
+## Betrieb
 
-```bash
-npm run bot:start
-npm run bot:status
-npm run bot:ask -- "Analysiere diesen Fehler und gib Fix-Schritte"
-npm run bot:new
-npm run bot:cancel
-npm run bot:repl
-npm run bot:logs
-npm run bot:stop
-```
-
-## Security Model
-
-- Bot akzeptiert nur den konfigurierten Telegram User (`TELEGRAM_ALLOWED_USER_ID`)
-- Mini-App Requests werden mit Telegram `initData` validiert
-- API-Rate-Limits fuer Live/Input Endpunkte
-- lokale Daten bleiben in `data/`
-- Secrets gehoeren nur in `.env` (nie committen)
-
-## Betrieb & Autostart
-
-### One-Click (macOS)
+### One-click Start (macOS)
 
 ```bash
 ./START_BOT.command
 ```
-
-Startet Tunnel, schreibt `BOT_WEBAPP_URL` in `.env` und startet den Bot.
 
 ### PM2 (optional)
 
@@ -140,13 +115,6 @@ pm2 start ecosystem.config.cjs
 pm2 save
 pm2 startup
 ```
-
-## Troubleshooting
-
-- `tmux unavailable`: `tmux` installieren oder Backend anpassen
-- `Voice transcription not ready`: `/voice` pruefen, Script/API-Key konfigurieren
-- Mini-App ohne Daten: `BOT_WEBAPP_URL`, `/panelstatus` und Tunnel-Log pruefen
-- Codex startet nicht: `BOT_CODEX_BACKEND`, `CODEX_BIN`, Rechte/Path pruefen
 
 ## Tests
 
