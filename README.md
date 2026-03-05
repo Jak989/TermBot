@@ -4,6 +4,8 @@ TermBot ist ein Telegram-Bot fuer dein lokales Terminal, der gleichzeitig als pe
 
 Der entscheidende Unterschied: **Sobald Codex laeuft, unterhaeltst du dich im Chat mit deinem Assistant** und laesst ihn Aufgaben erledigen, statt nur rohe Shell-Kommandos zu schicken.
 
+> Hinweis: TermBot ist ein unabhaengiges Open-Source-Projekt und **nicht** mit OpenAI oder Telegram verbunden, gesponsert oder offiziell endorsed.
+
 ## Was TermBot besonders macht
 
 - Terminal-Steuerung per Telegram fuer deinen lokalen Rechner
@@ -45,7 +47,7 @@ Bei neuen Codex-Sessions wird dieses Profil automatisch als Verhalten geladen (k
 | Chat Collaboration | Normale Chat-Nachrichten werden waehrend Codex-Lauf als Input verarbeitet |
 | Productivity | `/timer`, `/remind`, `/daily`, `/terminal`, `/reminders`, `/remindoff` |
 | Project Context | `/projects` fuer letzte Projektkontexte und Restore |
-| Mini App | Tabs fuer Codex, Raw, Events, System + direkte Eingaben |
+| Mini App | Tabs fuer Coding, Raw, Events, System + direkte Eingaben |
 | Voice | Audio/Voice -> Transkript -> Verarbeitung wie Text |
 | Notion Sync (optional) | Aktivitaeten als Notion-Eintraege (API oder MCP) |
 
@@ -81,6 +83,7 @@ Empfohlen fuer vollen Assistant-Betrieb:
 - `BOT_AUTO_START_CODEX=1`
 - `BOT_PROMPT_ON_START=1`
 - `BOT_PERSONALITY_AUTO_APPLY=1`
+- `CODEX_YOLO=0` (sicherer Default)
 - `BOT_WEBAPP_ENABLE=1`
 - `BOT_WEBAPP_URL=https://...`
 
@@ -99,6 +102,12 @@ Empfohlen fuer vollen Assistant-Betrieb:
 - Rate Limits fuer Live/Input API
 - Secrets nur in `.env`, nie committen
 - Laufzeitdaten bleiben lokal in `data/`
+
+## Trademark & Affiliation
+
+- TermBot ist ein Community-Projekt.
+- `Codex`, `OpenAI` und `Telegram` sind Marken ihrer jeweiligen Inhaber.
+- Die Nennung dient nur der Kompatibilitaetsbeschreibung.
 
 ## Betrieb
 

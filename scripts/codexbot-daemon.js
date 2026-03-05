@@ -23,7 +23,7 @@ const CODEX_CWD = process.env.CODEX_CWD || PROJECT_ROOT;
 const CODEX_MODEL = process.env.CODEX_MODEL || "";
 const CODEX_USE_OSS = String(process.env.CODEX_USE_OSS || "0") === "1";
 const CODEX_LOCAL_PROVIDER = String(process.env.CODEX_LOCAL_PROVIDER || "").trim();
-const CODEX_YOLO = String(process.env.CODEX_YOLO || "1") !== "0";
+const CODEX_YOLO = String(process.env.CODEX_YOLO || "0") !== "0";
 const CANCEL_FALLBACK_MS = Number(process.env.CODEXBOT_CANCEL_FALLBACK_MS || 2500);
 
 ensureDir(DATA_DIR);
