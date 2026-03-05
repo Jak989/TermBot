@@ -109,9 +109,9 @@ Test-Mindeststandard:
 
 <!-- BOT_PROFILE_START -->
 ## Persönliche Präferenzen (automatisch gepflegt)
-- Nutzername: JD
-- Assistentenname: Schenni
-- Kommunikationsstil: leger
-- Eigene Preferences: 3
-- Zuletzt aktualisiert: 2026-03-03T22:25:59.246Z
+- Nutzername: <unset>
+- Assistentenname: <unset>
+- Kommunikationsstil: <unset>
+- Eigene Preferences: 0
+- Zuletzt aktualisiert: <unset>
 <!-- BOT_PROFILE_END -->
