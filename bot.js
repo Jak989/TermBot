@@ -48,6 +48,8 @@ const BOT_WEBAPP_MAX_SCREEN_CHARS = Number.isFinite(Number(process.env.BOT_WEBAP
   ? Number(process.env.BOT_WEBAPP_MAX_SCREEN_CHARS)
   : 8000;
 const BOT_CHAT_CODEX_FEEDBACK = String(process.env.BOT_CHAT_CODEX_FEEDBACK || "0") !== "0";
+const BOT_CHAT_INCLUDE_SYSTEM_META = String(process.env.BOT_CHAT_INCLUDE_SYSTEM_META || "0") !== "0";
+const BOT_CHAT_SEND_THINKING_MARKER = String(process.env.BOT_CHAT_SEND_THINKING_MARKER || "0") !== "0";
 const BOT_CHAT_SEND_DONE_MARKER = String(process.env.BOT_CHAT_SEND_DONE_MARKER || "0") !== "0";
 const BOT_CHAT_ESSENTIAL_MAX_CHARS = Number.isFinite(Number(process.env.BOT_CHAT_ESSENTIAL_MAX_CHARS))
   ? Math.max(120, Number(process.env.BOT_CHAT_ESSENTIAL_MAX_CHARS))
@@ -2026,6 +2028,7 @@ function beginNewTurn(run, reason) {
 
 async function notifyTurnThinking(run) {
   if (!isActiveCodexRun(run)) return;
+  if (!BOT_CHAT_SEND_THINKING_MARKER) return;
   if (run.lastThinkingTurn === run.turnIndex) return;
   run.lastThinkingTurn = run.turnIndex;
   await sendMessage(run.chatId, "thinking ...");
@@ -2424,9 +2427,11 @@ async function upsertCodexStatus(run, isFinal = false) {
   updateMiniSnapshot(run);
   if (!BOT_CHAT_CODEX_FEEDBACK) return;
   const responseText = buildCodexResponseMessage(run, isFinal);
-  const systemText = buildCodexSystemMessage(run, isFinal);
   await upsertCodexMessage(run, responseText, "responseMessageId", "lastResponseText", "response");
-  await upsertCodexMessage(run, systemText, "systemMessageId", "lastSystemText", "system");
+  if (BOT_CHAT_INCLUDE_SYSTEM_META) {
+    const systemText = buildCodexSystemMessage(run, isFinal);
+    await upsertCodexMessage(run, systemText, "systemMessageId", "lastSystemText", "system");
+  }
 }
 
 function clearCodexTimers(run) {
@@ -2521,7 +2526,10 @@ async function maybeNotifyReplyButtons(run) {
       { text: "no but...", callback_data: "reply:no_but" },
       { text: "manual", callback_data: "reply:manual" },
     ],
-    [{ text: "cancel", callback_data: "reply:cancel" }],
+    [
+      { text: "mini app", callback_data: "reply:panel" },
+      { text: "cancel", callback_data: "reply:cancel" },
+    ],
   ];
 
   await sendMessage(run.chatId, `Rueckfrage:\n${replyPrompt}`, {
@@ -3627,6 +3635,10 @@ bot.on("callback_query", async (query) => {
     }
     if (action === "no_but") {
       await sendMessage(chatId, "Please send your reason now. I will send it as: no but <reason>.");
+      return;
+    }
+    if (action === "panel") {
+      await sendPanelButton(chatId, { title: "Mini App:" });
       return;
     }
 
