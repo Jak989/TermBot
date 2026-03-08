@@ -115,13 +115,33 @@ Voraussetzung: Docker + Docker Compose Plugin auf dem Server.
 git clone <dein-repo-url>
 cd TermBot
 cp .env.example .env
-# .env mit echten Werten fuellen
+# .env mit echten Werten fuellen (mindestens TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USER_ID)
 docker compose up -d --build
+```
+
+Logs/Status:
+
+```bash
+docker compose logs -f termbot
+docker compose ps
 ```
 
 Ausfuehrliche Schritt-fuer-Schritt-Anleitung:
 
 - `docs/CONTAINER_DEPLOY.md`
+
+Container bringt mit:
+
+- `node 22`
+- `tmux` (fuer Codex-Session-Backend)
+- `@openai/codex` CLI
+- `cloudflared` (Quick Tunnel)
+- Healthcheck auf `http://127.0.0.1:8787/telegram-miniapp/index.html`
+
+Wichtig fuer Codex im Container:
+
+- `CODEX_HOME` ist auf Volume `codex_home` gelegt (persistente Auth/Profile)
+- Falls noetig im Container einmalig einloggen: `docker compose exec termbot codex login`
 
 ## Sicherheit
 

@@ -1,0 +1,20 @@
+# Keep build context minimal and avoid leaking local/private data.
+*
+
+# App runtime files required in image
+!bot.js
+!package.json
+!package-lock.json
+!V3_PERSONALITY.md
+!public/
+!scripts/
+!data/.gitkeep
+
+# Container assets
+!Dockerfile
+!docker-compose.yml
+!docker/entrypoint.sh
+
+# Docs/examples
+!.env.example
+!README.md
