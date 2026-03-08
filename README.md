@@ -9,6 +9,7 @@ Der entscheidende Unterschied: **Sobald Codex laeuft, unterhaeltst du dich im Ch
 ## Was TermBot besonders macht
 
 - Terminal-Steuerung per Telegram fuer deinen lokalen Rechner
+- Optionaler Slack-Bridge-Modus (Socket Mode)
 - Assistant-Modus ueber Codex fuer echte Zusammenarbeit im Chat
 - Eigene Persoenlichkeit pro User (`/setupassistant`)
 - Merkt sich deine Vorlieben dauerhaft (Name, Ton, Preferences)
@@ -50,6 +51,7 @@ Bei neuen Codex-Sessions wird dieses Profil automatisch als Verhalten geladen (k
 | Mini App | Tabs fuer Coding, Raw, Events, System + direkte Eingaben |
 | Voice | Audio/Voice -> Transkript -> Verarbeitung wie Text |
 | Notion Sync (optional) | Aktivitaeten als Notion-Eintraege (API oder MCP) |
+| Slack (optional) | Socket-Mode Steuerung mit denselben Core-Commands |
 
 ## Kern-Kommandos
 
@@ -87,13 +89,39 @@ Empfohlen fuer vollen Assistant-Betrieb:
 - `BOT_WEBAPP_ENABLE=1`
 - `BOT_WEBAPP_URL=https://...`
 
+Optional fuer Slack:
+
+- `SLACK_BOT_ENABLED=1`
+- `SLACK_BOT_TOKEN=xoxb-...`
+- `SLACK_APP_TOKEN=xapp-...` (Socket Mode)
+- optional: `SLACK_ALLOWED_USER_ID=U...`
+- optional: `SLACK_ALLOWED_CHANNEL_ID=C...`
+- optional: `SLACK_STARTUP_CHANNEL_ID=C...`
+
 ## Architektur
 
-- `bot.js`: Telegram Controller, Session-Orchestrierung, Reminder, Profile, Mini-App API
+- `bot.js`: Telegram/Slack Controller, Session-Orchestrierung, Reminder, Profile, Mini-App API
 - `scripts/codexbot-daemon.js`: lokaler Daemon fuer langlebige Codex-Runs
 - `scripts/codexbot-cli.js`: lokale CLI (`start|stop|status|ask|new|cancel|repl|logs`)
+- `scripts/restart-bot-helper.js`: robuster Self-Restart ohne Prozess-Race
 - `public/telegram-miniapp/*`: WebApp Command Center
 - `data/`: lokale Laufzeitdaten (state, logs, reminders, profile)
+
+## Container Deploy (Server)
+
+Voraussetzung: Docker + Docker Compose Plugin auf dem Server.
+
+```bash
+git clone <dein-repo-url>
+cd TermBot
+cp .env.example .env
+# .env mit echten Werten fuellen
+docker compose up -d --build
+```
+
+Ausfuehrliche Schritt-fuer-Schritt-Anleitung:
+
+- `docs/CONTAINER_DEPLOY.md`
 
 ## Sicherheit
 

@@ -20,6 +20,7 @@
     "postinstall": "node scripts/fix-node-pty-perms.js"
   },
   "dependencies": {
+    "@slack/bolt": "^4.6.0",
     "dotenv": "^16.6.1",
     "express": "^4.19.2",
     "node-pty": "^1.0.0",
