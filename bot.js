@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const https = require("https");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const dotenv = require("dotenv");
 const express = require("express");
 const TelegramBot = require("node-telegram-bot-api");
@@ -9,31 +9,38 @@ const { App: SlackApp, LogLevel } = require("@slack/bolt");
 const pty = require("node-pty");
 const tmux = require("./scripts/lib/tmux-bridge");
 const { validateInitData } = require("./scripts/lib/telegram-webapp-auth");
+const {
+  acquireProcessLock,
+  releaseProcessLock,
+  writeJson: writeRuntimeJson,
+} = require("./scripts/lib/runtime-state");
+const { appendRuntimeEvent } = require("./scripts/lib/runtime-events");
 
 dotenv.config();
 
 function readAndConsumeRestartContext(filePath) {
   try {
     if (!fs.existsSync(filePath)) {
-      return { source: "", chatId: "" };
+      return { source: "", chatId: "", restartId: "" };
     }
     const raw = fs.readFileSync(filePath, "utf8").trim();
     if (!raw) {
       fs.unlinkSync(filePath);
-      return { source: "", chatId: "" };
+      return { source: "", chatId: "", restartId: "" };
     }
     const parsed = JSON.parse(raw);
     fs.unlinkSync(filePath);
     return {
       source: String(parsed?.source || "").trim().toLowerCase(),
       chatId: String(parsed?.chatId || "").trim(),
+      restartId: String(parsed?.restartId || "").trim(),
     };
   } catch (_err) {
-    return { source: "", chatId: "" };
+    return { source: "", chatId: "", restartId: "" };
   }
 }
 
-function writeRestartContext(filePath, source, chatId) {
+function writeRestartContext(filePath, source, chatId, restartId = "") {
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(
@@ -42,6 +49,7 @@ function writeRestartContext(filePath, source, chatId) {
         {
           source: String(source || "").trim(),
           chatId: String(chatId || "").trim(),
+          restartId: String(restartId || "").trim(),
           ts: new Date().toISOString(),
         },
         null,
@@ -107,6 +115,11 @@ const BOT_CHAT_ESSENTIAL_MAX_LINES = Number.isFinite(Number(process.env.BOT_CHAT
   ? Math.max(1, Number(process.env.BOT_CHAT_ESSENTIAL_MAX_LINES))
   : 5;
 const BOT_ENABLE_RESTART_COMMAND = String(process.env.BOT_ENABLE_RESTART_COMMAND || "1") !== "0";
+const BOT_SINGLE_INSTANCE = String(process.env.BOT_SINGLE_INSTANCE || "1") !== "0";
+const BOT_RESTART_HEALTH_TIMEOUT_MS = Number.isFinite(Number(process.env.BOT_RESTART_HEALTH_TIMEOUT_MS))
+  ? Math.max(1500, Number(process.env.BOT_RESTART_HEALTH_TIMEOUT_MS))
+  : 15000;
+const BOT_RESTART_READY_FILE_RAW = String(process.env.BOT_RESTART_READY_FILE || "data/runtime/restart-ready.json").trim();
 const BOT_PERSONALITY_AUTO_APPLY = String(process.env.BOT_PERSONALITY_AUTO_APPLY || "1") !== "0";
 const BOT_PERSONALITY_FILE = String(process.env.BOT_PERSONALITY_FILE || "V3_PERSONALITY.md").trim() || "V3_PERSONALITY.md";
 const BOT_PERSONALITY_MAX_CHARS = Number.isFinite(Number(process.env.BOT_PERSONALITY_MAX_CHARS))
@@ -170,16 +183,24 @@ const ENV_FILE_PATH = path.join(__dirname, ".env");
 const CLOUDFLARED_LOG_PATH = path.join(__dirname, "data", "cloudflared.log");
 const CLOUDFLARED_PID_PATH = path.join(__dirname, "data", "cloudflared.pid");
 const ACTIVITY_LOG_PATH = path.join(__dirname, "data", "activity-log.jsonl");
+const BOT_RUNTIME_DIR = path.join(__dirname, "data", "runtime");
+const BOT_RUNTIME_LOCK_PATH = path.join(BOT_RUNTIME_DIR, "bot.lock");
+const BOT_RUNTIME_EVENTS_PATH = path.join(BOT_RUNTIME_DIR, "events.jsonl");
+const BOT_RUNTIME_STATE_PATH = path.join(BOT_RUNTIME_DIR, "state.json");
 const BOT_RESTART_HELPER_PATH = path.join(__dirname, "scripts", "restart-bot-helper.js");
 const BOT_RESTART_LOG_PATH = "/tmp/termbot-restart.log";
 const BOT_RUNTIME_LOG_PATH = "/tmp/termbot-bot.log";
 const BOT_PROJECT_ROOT = path.resolve(__dirname);
 const BOT_RESTART_CONTEXT_PATH = path.join(__dirname, "data", "restart-context.json");
+const BOT_RESTART_READY_FILE = path.isAbsolute(BOT_RESTART_READY_FILE_RAW)
+  ? BOT_RESTART_READY_FILE_RAW
+  : path.join(__dirname, BOT_RESTART_READY_FILE_RAW);
 const BOT_SUPERVISED = String(process.env.TERMBOT_SUPERVISED || "0") === "1";
 const restartContext = readAndConsumeRestartContext(BOT_RESTART_CONTEXT_PATH);
 const BOT_RESTART_BOOT_SOURCE =
   String(process.env.TERMBOT_RESTART_SOURCE || "").trim().toLowerCase() || restartContext.source;
 const BOT_RESTART_BOOT_CHAT_ID = String(process.env.TERMBOT_RESTART_CHAT_ID || "").trim() || restartContext.chatId;
+const BOT_RESTART_BOOT_ID = String(process.env.TERMBOT_RESTART_ID || "").trim() || restartContext.restartId;
 const BOT_FORCE_CODEX_ON_RESTART = String(process.env.BOT_FORCE_CODEX_ON_RESTART || "1") !== "0";
 const NOTION_SYNC_ENABLED = String(process.env.NOTION_SYNC_ENABLED || "0") === "1";
 const NOTION_API_TOKEN = String(process.env.NOTION_API_TOKEN || "").trim();
@@ -211,6 +232,26 @@ if (!TELEGRAM_ALLOWED_USER_ID) {
   throw new Error("Missing TELEGRAM_ALLOWED_USER_ID in environment.");
 }
 
+let runtimeLockHeld = false;
+if (BOT_SINGLE_INSTANCE) {
+  const lockResult = acquireProcessLock(BOT_RUNTIME_LOCK_PATH, {
+    pid: process.pid,
+    role: "bot",
+    startedAt: new Date().toISOString(),
+    cwd: BOT_PROJECT_ROOT,
+  });
+  if (!lockResult.ok) {
+    const existingPid = Number(lockResult?.existing?.pid || 0);
+    console.error(
+      lockResult.reason === "already_locked"
+        ? `[runtime] single-instance guard: bot already running pid=${existingPid || "unknown"}`
+        : `[runtime] single-instance guard failed: ${lockResult.reason || "unknown"}`
+    );
+    process.exit(1);
+  }
+  runtimeLockHeld = true;
+}
+
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 let slackApp = null;
 
@@ -232,6 +273,10 @@ process.on("SIGINT", () => {
 });
 
 process.on("exit", (code) => {
+  if (runtimeLockHeld) {
+    releaseProcessLock(BOT_RUNTIME_LOCK_PATH, process.pid);
+    runtimeLockHeld = false;
+  }
   console.error(`[runtime] process exit code=${code}`);
 });
 
@@ -1228,6 +1273,30 @@ async function stopCloudflaredProcess(pid) {
   await waitForProcessExit(pid, 1000);
 }
 
+function cleanupOrphanCloudflaredProcesses(trackedPid) {
+  const target = cloudflareTunnelTargetUrl();
+  const probe = spawnSync("pgrep", ["-f", `cloudflared tunnel --url ${target}`], {
+    encoding: "utf8",
+  });
+  if (!probe || typeof probe.stdout !== "string") return 0;
+  const found = probe.stdout
+    .split(/\r?\n/g)
+    .map((line) => Number(line.trim()))
+    .filter((pid) => Number.isSafeInteger(pid) && pid > 0);
+
+  let cleaned = 0;
+  for (const pid of found) {
+    if (Number.isSafeInteger(trackedPid) && pid === trackedPid) continue;
+    try {
+      process.kill(pid, "SIGTERM");
+      cleaned += 1;
+    } catch (_err) {
+      // ignore
+    }
+  }
+  return cleaned;
+}
+
 function probeUrlOnce(url, timeoutMs) {
   return new Promise((resolve) => {
     let settled = false;
@@ -1315,6 +1384,11 @@ async function ensureCloudflareTunnelOnStartup() {
   const pid = readPidFile(CLOUDFLARED_PID_PATH);
   if (pid && !isPidAlive(pid)) {
     clearPidFile(CLOUDFLARED_PID_PATH);
+  }
+  const trackedPid = readPidFile(CLOUDFLARED_PID_PATH);
+  const cleanedOrphans = cleanupOrphanCloudflaredProcesses(trackedPid);
+  if (cleanedOrphans > 0) {
+    console.log(`Cleaned orphan cloudflared processes: ${cleanedOrphans}`);
   }
 
   const runningPid = readPidFile(CLOUDFLARED_PID_PATH);
@@ -1486,8 +1560,107 @@ async function sendMessage(chatId, text, options = {}) {
     return await bot.sendMessage(chatId, text, options);
   } catch (err) {
     console.error("Failed to send Telegram message:", err.message);
+    logRuntimeEvent("telegram_send_failed", {
+      chatId: String(chatId || ""),
+      error: trimErrorMessage(err),
+    });
     return null;
   }
+}
+
+function trimErrorMessage(err) {
+  const raw = String(err?.message || err || "").replace(/\s+/g, " ").trim();
+  return raw.slice(0, 300) || "unknown error";
+}
+
+function createRuntimeId(prefix) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function extractCommandName(text) {
+  const normalized = String(text || "").trim();
+  if (!normalized) return "(empty)";
+  const first = normalized.split(/\s+/g)[0];
+  if (first.startsWith("/")) return first.toLowerCase();
+  if (first.length > 64) return `${first.slice(0, 61)}...`;
+  return first.toLowerCase();
+}
+
+function currentRuntimeState() {
+  if (isRestartingBot) return "restarting";
+  if (!activeRun) return "idle";
+  if (activeRun.mode === "shell_command" && !activeRun.done) return "shell_running";
+  if (activeRun.mode === "codex_tmux" && !activeRun.done) return "codex_running";
+  return "idle";
+}
+
+function logRuntimeEvent(type, payload = {}) {
+  appendRuntimeEvent(BOT_RUNTIME_EVENTS_PATH, {
+    type,
+    pid: process.pid,
+    state: currentRuntimeState(),
+    ...payload,
+  });
+}
+
+function beginCommandTrace(source, chatId, text) {
+  const trace = {
+    id: createRuntimeId("cmd"),
+    source: String(source || "unknown"),
+    chatId: String(chatId || ""),
+    command: extractCommandName(text),
+    textPreview: shortInputPreview(text || ""),
+    finished: false,
+    startedAt: Date.now(),
+  };
+  logRuntimeEvent("command_received", {
+    commandId: trace.id,
+    source: trace.source,
+    chatId: trace.chatId,
+    command: trace.command,
+    textPreview: trace.textPreview,
+  });
+  logRuntimeEvent("command_started", {
+    commandId: trace.id,
+    source: trace.source,
+    chatId: trace.chatId,
+    command: trace.command,
+  });
+  return trace;
+}
+
+function finishCommandTrace(trace, status, payload = {}) {
+  if (!trace || trace.finished) return;
+  trace.finished = true;
+  const runtimeMs = Date.now() - trace.startedAt;
+  logRuntimeEvent(status, {
+    commandId: trace.id,
+    source: trace.source,
+    chatId: trace.chatId,
+    command: trace.command,
+    runtimeMs,
+    ...payload,
+  });
+}
+
+function writeRuntimeStateSnapshot(extra = {}) {
+  writeRuntimeJson(BOT_RUNTIME_STATE_PATH, {
+    pid: process.pid,
+    state: currentRuntimeState(),
+    ts: new Date().toISOString(),
+    ...extra,
+  });
+}
+
+function writeRestartReadyMarker(extra = {}) {
+  writeRuntimeJson(BOT_RESTART_READY_FILE, {
+    pid: process.pid,
+    restartId: BOT_RESTART_BOOT_ID || "",
+    source: BOT_RESTART_BOOT_SOURCE || "",
+    chatId: BOT_RESTART_BOOT_CHAT_ID || "",
+    ts: new Date().toISOString(),
+    ...extra,
+  });
 }
 
 function getOpenAiApiKey() {
@@ -2079,9 +2252,16 @@ async function restartBotProcess(chatId, source = "chat") {
     pushRunEvent(activeRun, `bot restart requested (${source})`);
   }
 
-  await sendMessage(chatId, "Restarting bot process...");
+  const restartId = createRuntimeId("rst");
+  await sendMessage(chatId, `Restart accepted (id=${restartId}).`);
+  logRuntimeEvent("restart_requested", {
+    restartId,
+    source: String(source || "unknown"),
+    chatId: String(chatId || ""),
+  });
+
   try {
-    writeRestartContext(BOT_RESTART_CONTEXT_PATH, source, chatId);
+    writeRestartContext(BOT_RESTART_CONTEXT_PATH, source, chatId, restartId);
     if (BOT_SUPERVISED) {
       setTimeout(() => {
         process.exit(0);
@@ -2098,6 +2278,9 @@ async function restartBotProcess(chatId, source = "chat") {
       `--restart-log=${BOT_RESTART_LOG_PATH}`,
       `--chat-id=${String(chatId || "").trim()}`,
       `--source=${source}`,
+      `--restart-id=${restartId}`,
+      `--ready-file=${BOT_RESTART_READY_FILE}`,
+      `--health-timeout=${BOT_RESTART_HEALTH_TIMEOUT_MS}`,
     ];
     const child = spawn(process.execPath, helperArgs, {
       cwd: RESOLVED_BOT_CWD,
@@ -2115,13 +2298,19 @@ async function restartBotProcess(chatId, source = "chat") {
     return true;
   } catch (err) {
     isRestartingBot = false;
-    await sendMessage(chatId, `Restart failed: ${err.message}`);
+    logRuntimeEvent("restart_failed", {
+      restartId,
+      source: String(source || "unknown"),
+      chatId: String(chatId || ""),
+      error: trimErrorMessage(err),
+    });
+    await sendMessage(chatId, `Restart failed (id=${restartId}): ${trimErrorMessage(err)}`);
     return false;
   }
 }
 
 function runMode() {
-  return activeRun ? activeRun.mode : "idle";
+  return currentRuntimeState();
 }
 
 function codexTurnState(run) {
@@ -2255,6 +2444,10 @@ function buildMiniAppSnapshot(run = activeRun) {
 
 function updateMiniSnapshot(run = activeRun) {
   lastMiniSnapshot = buildMiniAppSnapshot(run);
+  writeRuntimeStateSnapshot({
+    mode: lastMiniSnapshot.mode,
+    runActive: Boolean(run && !run.done),
+  });
 }
 
 function pushRunEvent(run, message) {
@@ -3258,7 +3451,16 @@ async function sendStartupFlow() {
 
   const forceCodexAfterRestart = Boolean(BOT_RESTART_BOOT_SOURCE) && BOT_FORCE_CODEX_ON_RESTART;
   if (BOT_RESTART_BOOT_SOURCE) {
-    await sendMessage(startupChatId, `Bot restarted (${BOT_RESTART_BOOT_SOURCE}).`);
+    await sendMessage(
+      startupChatId,
+      `Restart completed (id=${BOT_RESTART_BOOT_ID || "n/a"}, pid=${process.pid}, source=${BOT_RESTART_BOOT_SOURCE}).`
+    );
+    logRuntimeEvent("restart_completed", {
+      restartId: BOT_RESTART_BOOT_ID || "",
+      source: BOT_RESTART_BOOT_SOURCE,
+      chatId: String(startupChatId),
+      pid: process.pid,
+    });
   } else {
     await sendMessage(startupChatId, "Bot started on your Mac.");
   }
@@ -3391,83 +3593,115 @@ async function handleMiniAppInput(rawText) {
   const chatId = miniAppChatId();
   const normalized = text.trim();
   const lowered = normalized.toLowerCase();
+  const trace = beginCommandTrace("miniapp", chatId, normalized);
 
-  if (lowered === "/status") {
-    await handleStatus(chatId);
-    return { ok: true, action: "status" };
-  }
-
-  if (isRestartCommand(lowered)) {
-    if (!BOT_ENABLE_RESTART_COMMAND) {
-      return { ok: false, error: "restart_disabled" };
-    }
-    await restartBotProcess(chatId, "miniapp");
-    return { ok: true, action: "restart_bot" };
-  }
-
-  if (lowered === "/stopcodex" || lowered === "stop codex" || lowered === "/cancel") {
-    if (!activeRun) return { ok: true, action: "stop_idle" };
-    if (activeRun.mode === "shell_command") {
-      await cancelShellRun("cancel");
-      return { ok: true, action: "stop_shell" };
-    }
-    await requestCancelCodexRun(activeRun, "cancel");
-    return { ok: true, action: "stop_codex" };
-  }
-
-  if (await maybeHandleOnboardingReply(chatId, text)) {
-    return { ok: true, action: "onboarding_reply" };
-  }
-
-  if (await maybeHandleReminderCommands(chatId, text)) {
-    return { ok: true, action: "reminder" };
-  }
-
-  if (activeRun && activeRun.mode === "shell_command") {
-    return { ok: false, error: "shell_busy" };
-  }
-
-  if (activeRun && activeRun.mode === "codex_tmux") {
-    const run = activeRun;
-
-    if (lowered === "/enter") {
-      run.inputCount += 1;
-      run.lastInputPreview = "[ENTER]";
-      beginNewTurn(run, "miniapp-enter");
-      await notifyTurnThinking(run);
-      pushRunEvent(run, "miniapp /enter");
-      await upsertCodexStatus(run, false);
-      await submitWithFallback(run, "miniapp-enter");
-      return { ok: true, action: "enter" };
+  try {
+    if (currentRuntimeState() === "restarting" && lowered !== "/status" && !isRestartCommand(lowered)) {
+      await sendMessage(chatId, "Restart in progress. Please wait a few seconds.");
+      finishCommandTrace(trace, "command_failed", { reason: "restart_in_progress" });
+      return { ok: false, error: "restart_in_progress" };
     }
 
-    if (text.startsWith("/raw ")) {
-      await sendCodexRaw(run, text.slice(5));
-      return { ok: true, action: "raw" };
+    if (lowered === "/status") {
+      await handleStatus(chatId);
+      finishCommandTrace(trace, "command_completed", { action: "status" });
+      return { ok: true, action: "status" };
     }
 
-    if (normalized.startsWith("/")) {
-      return { ok: false, error: "unknown_runtime_command" };
+    if (isRestartCommand(lowered)) {
+      if (!BOT_ENABLE_RESTART_COMMAND) {
+        finishCommandTrace(trace, "command_failed", { reason: "restart_disabled" });
+        return { ok: false, error: "restart_disabled" };
+      }
+      await restartBotProcess(chatId, "miniapp");
+      finishCommandTrace(trace, "command_completed", { action: "restart_bot" });
+      return { ok: true, action: "restart_bot" };
     }
 
-    await sendCodexInputLine(run, text);
-    return { ok: true, action: "codex_input" };
-  }
-
-  if (lowered === "/codexstart") {
-    if (BOT_CODEX_BACKEND !== "tmux") {
-      return { ok: false, error: "codex_backend_not_tmux" };
+    if (lowered === "/stopcodex" || lowered === "stop codex" || lowered === "/cancel") {
+      if (!activeRun) {
+        finishCommandTrace(trace, "command_completed", { action: "stop_idle" });
+        return { ok: true, action: "stop_idle" };
+      }
+      if (activeRun.mode === "shell_command") {
+        await cancelShellRun("cancel");
+        finishCommandTrace(trace, "command_completed", { action: "stop_shell" });
+        return { ok: true, action: "stop_shell" };
+      }
+      await requestCancelCodexRun(activeRun, "cancel");
+      finishCommandTrace(trace, "command_completed", { action: "stop_codex" });
+      return { ok: true, action: "stop_codex" };
     }
-    await startCodexTmuxRun(chatId, "codex");
-    return { ok: true, action: "start_codex" };
-  }
 
-  if (BOT_CODEX_BACKEND === "tmux" && isCodexCommand(normalized)) {
-    await startCodexTmuxRun(chatId, normalized);
-    return { ok: true, action: "start_codex_cmd" };
-  }
+    if (await maybeHandleOnboardingReply(chatId, text)) {
+      finishCommandTrace(trace, "command_completed", { action: "onboarding_reply" });
+      return { ok: true, action: "onboarding_reply" };
+    }
 
-  return { ok: false, error: "no_active_codex", hint: "send /codexstart first" };
+    if (await maybeHandleReminderCommands(chatId, text)) {
+      finishCommandTrace(trace, "command_completed", { action: "reminder" });
+      return { ok: true, action: "reminder" };
+    }
+
+    if (activeRun && activeRun.mode === "shell_command") {
+      finishCommandTrace(trace, "command_failed", { reason: "shell_busy" });
+      return { ok: false, error: "shell_busy" };
+    }
+
+    if (activeRun && activeRun.mode === "codex_tmux") {
+      const run = activeRun;
+
+      if (lowered === "/enter") {
+        run.inputCount += 1;
+        run.lastInputPreview = "[ENTER]";
+        beginNewTurn(run, "miniapp-enter");
+        await notifyTurnThinking(run);
+        pushRunEvent(run, "miniapp /enter");
+        await upsertCodexStatus(run, false);
+        await submitWithFallback(run, "miniapp-enter");
+        finishCommandTrace(trace, "command_completed", { action: "enter" });
+        return { ok: true, action: "enter" };
+      }
+
+      if (text.startsWith("/raw ")) {
+        await sendCodexRaw(run, text.slice(5));
+        finishCommandTrace(trace, "command_completed", { action: "raw" });
+        return { ok: true, action: "raw" };
+      }
+
+      if (normalized.startsWith("/")) {
+        finishCommandTrace(trace, "command_failed", { reason: "unknown_runtime_command" });
+        return { ok: false, error: "unknown_runtime_command" };
+      }
+
+      await sendCodexInputLine(run, text);
+      finishCommandTrace(trace, "command_completed", { action: "codex_input" });
+      return { ok: true, action: "codex_input" };
+    }
+
+    if (lowered === "/codexstart") {
+      if (BOT_CODEX_BACKEND !== "tmux") {
+        finishCommandTrace(trace, "command_failed", { reason: "codex_backend_not_tmux" });
+        return { ok: false, error: "codex_backend_not_tmux" };
+      }
+      await startCodexTmuxRun(chatId, "codex");
+      finishCommandTrace(trace, "command_completed", { action: "start_codex" });
+      return { ok: true, action: "start_codex" };
+    }
+
+    if (BOT_CODEX_BACKEND === "tmux" && isCodexCommand(normalized)) {
+      await startCodexTmuxRun(chatId, normalized);
+      finishCommandTrace(trace, "command_completed", { action: "start_codex_cmd" });
+      return { ok: true, action: "start_codex_cmd" };
+    }
+
+    finishCommandTrace(trace, "command_failed", { reason: "no_active_codex" });
+    return { ok: false, error: "no_active_codex", hint: "send /codexstart first" };
+  } catch (err) {
+    finishCommandTrace(trace, "command_failed", { reason: "exception", error: trimErrorMessage(err) });
+    await sendMessage(chatId, `Command failed (${trace.id}): ${trimErrorMessage(err)}`);
+    return { ok: false, error: "exception" };
+  }
 }
 
 function buildPanelStatusLines() {
@@ -3865,10 +4099,18 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
   const text = normalizeSlackInput(rawText);
   const normalized = text.trim();
   const lowered = normalized.toLowerCase();
+  const trace = beginCommandTrace("slack", chatId, normalized);
 
-  if (await maybeHandleOnboardingReply(chatId, text)) {
-    return;
-  }
+  try {
+    if (currentRuntimeState() === "restarting" && lowered !== "/status" && !isRestartCommand(lowered)) {
+      await sendMessage(chatId, "Restart in progress. Please wait a few seconds.");
+      finishCommandTrace(trace, "command_failed", { reason: "restart_in_progress" });
+      return;
+    }
+
+    if (await maybeHandleOnboardingReply(chatId, text)) {
+      return;
+    }
 
   if (await maybeHandleReminderCommands(chatId, text)) {
     return;
@@ -4067,7 +4309,14 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
     return;
   }
 
-  await startShellCommand(chatId, text);
+    await startShellCommand(chatId, text);
+  } catch (err) {
+    finishCommandTrace(trace, "command_failed", { reason: "exception", error: trimErrorMessage(err) });
+    await sendMessage(chatId, `Command failed (${trace.id}): ${trimErrorMessage(err)}`);
+    return;
+  } finally {
+    finishCommandTrace(trace, "command_completed");
+  }
 }
 
 function slackEnabled() {
@@ -4141,6 +4390,8 @@ async function cleanupStaleTmuxSessions() {
 }
 
 async function bootstrapRuntime() {
+  writeRuntimeStateSnapshot({ phase: "booting" });
+  logRuntimeEvent("runtime_bootstrap_started", { supervised: BOT_SUPERVISED });
   ensureNodePtyHelperExecutable();
   applyUserProfileToPersonality();
   updateMiniSnapshot(null);
@@ -4158,6 +4409,13 @@ async function bootstrapRuntime() {
   await configureMiniAppMenuButton();
   await configureTelegramCommands();
   await bootstrapSlackBridge();
+  writeRestartReadyMarker({ phase: "ready" });
+  writeRuntimeStateSnapshot({ phase: "ready" });
+  logRuntimeEvent("runtime_ready", {
+    restartId: BOT_RESTART_BOOT_ID || "",
+    restartSource: BOT_RESTART_BOOT_SOURCE || "",
+    supervised: BOT_SUPERVISED,
+  });
   setTimeout(() => {
     void sendStartupFlow();
   }, Math.max(0, BOT_STARTUP_BOOT_DELAY_MS));
@@ -4167,6 +4425,7 @@ void bootstrapRuntime();
 
 bot.on("polling_error", (err) => {
   console.error("Telegram polling error:", err.message);
+  logRuntimeEvent("telegram_polling_error", { error: trimErrorMessage(err) });
 });
 
 async function answerCallback(query, text = "") {
@@ -4293,10 +4552,18 @@ bot.on("message", async (msg) => {
 
   const normalized = text.trim();
   const lowered = normalized.toLowerCase();
+  const trace = beginCommandTrace("telegram", chatId, normalized);
 
-  if (await maybeHandleOnboardingReply(chatId, text)) {
-    return;
-  }
+  try {
+    if (currentRuntimeState() === "restarting" && lowered !== "/status" && !isRestartCommand(lowered)) {
+      await sendMessage(chatId, "Restart in progress. Please wait a few seconds.");
+      finishCommandTrace(trace, "command_failed", { reason: "restart_in_progress" });
+      return;
+    }
+
+    if (await maybeHandleOnboardingReply(chatId, text)) {
+      return;
+    }
 
   if (await maybeHandleReminderCommands(chatId, text)) {
     return;
@@ -4490,7 +4757,14 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  await startShellCommand(chatId, text);
+    await startShellCommand(chatId, text);
+  } catch (err) {
+    finishCommandTrace(trace, "command_failed", { reason: "exception", error: trimErrorMessage(err) });
+    await sendMessage(chatId, `Command failed (${trace.id}): ${trimErrorMessage(err)}`);
+    return;
+  } finally {
+    finishCommandTrace(trace, "command_completed");
+  }
 });
 
 console.log("Terminal bot started (Telegram primary, Slack optional).");

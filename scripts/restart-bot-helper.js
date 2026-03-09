@@ -2,6 +2,11 @@
 
 const fs = require("fs");
 const { spawn } = require("child_process");
+const {
+  isPidAlive,
+  waitForReadyMarker,
+  removeFile,
+} = require("./lib/runtime-state");
 
 function parseArgs(argv) {
   const out = {};
@@ -21,16 +26,6 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isPidAlive(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (_err) {
-    return false;
-  }
-}
-
 function appendLog(logPath, message) {
   const line = `[${new Date().toISOString()}] ${message}\n`;
   try {
@@ -40,12 +35,25 @@ function appendLog(logPath, message) {
   }
 }
 
-function spawnDetachedBot({ nodeBin, botEntry, cwd, runtimeLogPath, restartSource, restartChatId }) {
+function createRestartId() {
+  return `rst_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function spawnDetachedBot({
+  nodeBin,
+  botEntry,
+  cwd,
+  runtimeLogPath,
+  restartSource,
+  restartChatId,
+  restartId,
+}) {
   const outFd = fs.openSync(runtimeLogPath, "a");
   const env = {
     ...process.env,
     TERMBOT_RESTART_SOURCE: String(restartSource || "").trim(),
     TERMBOT_RESTART_CHAT_ID: String(restartChatId || "").trim(),
+    TERMBOT_RESTART_ID: String(restartId || "").trim(),
   };
   const child = spawn(nodeBin, [botEntry], {
     cwd,
@@ -94,11 +102,34 @@ async function ensureOldProcessStopped(oldPid, restartLogPath) {
   await waitForPidToExit(oldPid, 2_000);
 }
 
+async function stopProcessIfAlive(pid, restartLogPath) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return;
+  if (!isPidAlive(pid)) return;
+
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (_err) {
+    // ignore
+  }
+  const exited = await waitForPidToExit(pid, 1500);
+  if (exited) return;
+
+  appendLog(restartLogPath, `new pid still alive after failed health check; sending SIGKILL (${pid})`);
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (_err) {
+    // ignore
+  }
+  await waitForPidToExit(pid, 500);
+}
+
 async function spawnWithRetry(params) {
   const attempts = [0, 500, 1200];
   for (let idx = 0; idx < attempts.length; idx += 1) {
     const waitBefore = attempts[idx];
     if (waitBefore > 0) await sleep(waitBefore);
+
+    removeFile(params.readyFilePath);
 
     let newPid = null;
     try {
@@ -108,13 +139,32 @@ async function spawnWithRetry(params) {
       continue;
     }
 
-    await sleep(1200);
-    if (isPidAlive(newPid)) {
-      appendLog(params.restartLogPath, `restart success on attempt ${idx + 1}, new pid=${newPid}`);
+    await sleep(800);
+    if (!isPidAlive(newPid)) {
+      appendLog(params.restartLogPath, `spawn attempt ${idx + 1} started pid=${newPid} but process exited early`);
+      continue;
+    }
+
+    const health = await waitForReadyMarker(params.readyFilePath, {
+      restartId: params.restartId,
+      expectedPid: newPid,
+      timeoutMs: params.healthTimeoutMs,
+      pollMs: 250,
+    });
+
+    if (health.ok) {
+      appendLog(
+        params.restartLogPath,
+        `restart success on attempt ${idx + 1}, new pid=${newPid}, restart_id=${params.restartId}`
+      );
       return true;
     }
 
-    appendLog(params.restartLogPath, `spawn attempt ${idx + 1} started pid=${newPid} but process exited early`);
+    appendLog(
+      params.restartLogPath,
+      `spawn attempt ${idx + 1} pid=${newPid} failed health check (restart_id=${params.restartId})`
+    );
+    await stopProcessIfAlive(newPid, params.restartLogPath);
   }
 
   return false;
@@ -131,13 +181,25 @@ async function main() {
   const restartLogPath = String(args["restart-log"] || "/tmp/termbot-restart.log").trim() || "/tmp/termbot-restart.log";
   const source = String(args.source || "unknown").trim() || "unknown";
   const restartChatId = String(args["chat-id"] || "").trim();
+  const restartId = String(args["restart-id"] || "").trim() || createRestartId();
+  const readyFilePath = String(args["ready-file"] || "").trim();
+  const healthTimeoutMs = Number.isFinite(Number(args["health-timeout"]))
+    ? Math.max(1500, Number(args["health-timeout"]))
+    : 15000;
 
   if (!botEntry) {
     appendLog(restartLogPath, "restart aborted: missing --entry");
     return;
   }
+  if (!readyFilePath) {
+    appendLog(restartLogPath, "restart aborted: missing --ready-file");
+    return;
+  }
 
-  appendLog(restartLogPath, `restart helper started (source=${source}, oldPid=${oldPid})`);
+  appendLog(
+    restartLogPath,
+    `restart helper started (source=${source}, oldPid=${oldPid}, restart_id=${restartId}, health_timeout_ms=${healthTimeoutMs})`
+  );
 
   await ensureOldProcessStopped(oldPid, restartLogPath);
 
@@ -149,10 +211,13 @@ async function main() {
     restartLogPath,
     restartSource: source,
     restartChatId,
+    restartId,
+    readyFilePath,
+    healthTimeoutMs,
   });
 
   if (!ok) {
-    appendLog(restartLogPath, "restart failed: all spawn attempts exhausted");
+    appendLog(restartLogPath, `restart failed: all spawn attempts exhausted (restart_id=${restartId})`);
   }
 }
 
