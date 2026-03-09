@@ -70,7 +70,7 @@ Bei neuen Codex-Sessions wird dieses Profil automatisch als Verhalten geladen (k
 ```bash
 npm install
 cp .env.example .env
-npm run bot
+npm run start
 ```
 
 Mindestens setzen in `.env`:
@@ -84,6 +84,9 @@ Empfohlen fuer vollen Assistant-Betrieb:
 - `BOT_CODEX_BACKEND=tmux`
 - `BOT_AUTO_START_CODEX=1`
 - `BOT_PROMPT_ON_START=1`
+- `BOT_SINGLE_INSTANCE=1`
+- `BOT_RESTART_HEALTH_TIMEOUT_MS=15000`
+- `BOT_RESTART_READY_FILE=data/runtime/restart-ready.json`
 - `BOT_PERSONALITY_AUTO_APPLY=1`
 - `CODEX_YOLO=0` (sicherer Default)
 - `BOT_WEBAPP_ENABLE=1`
@@ -104,8 +107,12 @@ Optional fuer Slack:
 - `scripts/codexbot-daemon.js`: lokaler Daemon fuer langlebige Codex-Runs
 - `scripts/codexbot-cli.js`: lokale CLI (`start|stop|status|ask|new|cancel|repl|logs`)
 - `scripts/restart-bot-helper.js`: robuster Self-Restart ohne Prozess-Race
+- `scripts/termbot-supervisor.js`: Supervisor-First Runtime (Single Source of Truth)
+- `scripts/bot-doctor.js`: Runtime-Diagnose (`npm run bot:doctor`)
+- `scripts/bot-restart-test.js`: lokaler Restart-Smoke (`npm run bot:restart-test`)
 - `public/telegram-miniapp/*`: WebApp Command Center
 - `data/`: lokale Laufzeitdaten (state, logs, reminders, profile)
+- `data/runtime/events.jsonl`: strukturierte Runtime-Events (`command_*`, `restart_*`, `runtime_*`)
 
 ## Container Deploy (Server)
 
@@ -176,7 +183,11 @@ pm2 startup
 ## Tests
 
 ```bash
+npm test
 npm run test:miniapp
+npm run bot:doctor
+# optional (erfordert laufenden Supervisor):
+npm run bot:restart-test
 ```
 
 ## Lizenz
