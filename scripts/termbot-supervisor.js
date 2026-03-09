@@ -57,8 +57,51 @@ function releaseLockIfHeld() {
   lockHeld = false;
 }
 
+function runCommand(bin, args) {
+  const { spawnSync } = require("child_process");
+  const result = spawnSync(bin, args, { encoding: "utf8" });
+  if (!result || result.status !== 0) return "";
+  return String(result.stdout || "");
+}
+
+function listBotPids() {
+  const out = runCommand("pgrep", ["-f", BOT_ENTRY]);
+  return out
+    .split(/\r?\n/g)
+    .map((line) => Number(line.trim()))
+    .filter((pid) => Number.isSafeInteger(pid) && pid > 0);
+}
+
+function killPidIfAlive(pid) {
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (_err) {
+    return false;
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (_err) {
+    // ignore
+  }
+  return true;
+}
+
+function cleanupOrphanBotProcesses() {
+  const pids = listBotPids().filter((pid) => pid !== process.pid);
+  if (!pids.length) return 0;
+  let cleaned = 0;
+  for (const pid of pids) {
+    if (killPidIfAlive(pid)) cleaned += 1;
+  }
+  return cleaned;
+}
+
 function spawnBot() {
   if (stopping) return;
+  const cleaned = cleanupOrphanBotProcesses();
+  if (cleaned > 0) {
+    appendSupervisorLog(`cleaned orphan bot processes before spawn: ${cleaned}`);
+  }
   const outFd = fs.openSync(RUNTIME_LOG, "a");
   child = spawn(process.execPath, [BOT_ENTRY], {
     cwd: PROJECT_ROOT,

@@ -158,6 +158,8 @@ const TMUX_SESSION_PREFIX = "codexbot_";
 const MAX_CAPTURE_CHARS = 1800;
 const MAX_EVENT_LOG = 200;
 const REPLY_BUTTON_COOLDOWN_MS = 45000;
+const TELEGRAM_CONFLICT_WINDOW_MS = 60_000;
+const TELEGRAM_CONFLICT_MAX = 5;
 const TELEGRAM_INIT_HEADER = "x-telegram-init-data";
 const MINIAPP_AUTH_MAX_AGE_SECONDS = 24 * 60 * 60;
 const MINIAPP_INPUT_MAX_CHARS = 4000;
@@ -264,13 +266,18 @@ process.on("uncaughtException", (err) => {
   console.error("[runtime] uncaughtException:", err?.stack || err?.message || String(err));
 });
 
-process.on("SIGTERM", () => {
-  console.error("[runtime] received SIGTERM");
-});
+let shutdownSignalHandled = false;
+function handleShutdownSignal(signalName) {
+  if (shutdownSignalHandled) return;
+  shutdownSignalHandled = true;
+  console.error(`[runtime] received ${signalName}, shutting down`);
+  setTimeout(() => {
+    process.exit(0);
+  }, 120);
+}
 
-process.on("SIGINT", () => {
-  console.error("[runtime] received SIGINT");
-});
+process.on("SIGTERM", () => handleShutdownSignal("SIGTERM"));
+process.on("SIGINT", () => handleShutdownSignal("SIGINT"));
 
 process.on("exit", (code) => {
   if (runtimeLockHeld) {
@@ -721,6 +728,87 @@ function isPidAlive(pid) {
   } catch (_err) {
     return false;
   }
+}
+
+function commandLineForPid(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return "";
+  try {
+    const probe = spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf8",
+    });
+    if (!probe || probe.status !== 0) return "";
+    return String(probe.stdout || "").trim();
+  } catch (_err) {
+    return "";
+  }
+}
+
+function listProjectBotPids() {
+  try {
+    const probe = spawnSync("pgrep", ["-f", path.join(BOT_PROJECT_ROOT, "bot.js")], {
+      encoding: "utf8",
+    });
+    if (!probe || probe.status !== 0) return [];
+    return String(probe.stdout || "")
+      .split(/\r?\n/g)
+      .map((line) => Number(line.trim()))
+      .filter((pid) => Number.isSafeInteger(pid) && pid > 0);
+  } catch (_err) {
+    return [];
+  }
+}
+
+function isProjectBotPid(pid) {
+  const cmd = commandLineForPid(pid);
+  if (!cmd) return false;
+  return cmd.includes(path.join(BOT_PROJECT_ROOT, "bot.js"));
+}
+
+function findListeningPidForPort(port) {
+  const safePort = Number(port);
+  if (!Number.isSafeInteger(safePort) || safePort <= 0) return 0;
+  try {
+    const probe = spawnSync("lsof", ["-nP", "-t", `-iTCP:${safePort}`, "-sTCP:LISTEN"], {
+      encoding: "utf8",
+    });
+    if (!probe || probe.status !== 0) return 0;
+    const line = String(probe.stdout || "")
+      .split(/\r?\n/g)
+      .map((item) => item.trim())
+      .find(Boolean);
+    const pid = Number(line || 0);
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : 0;
+  } catch (_err) {
+    return 0;
+  }
+}
+
+async function terminatePidGracefully(pid, timeoutMs = 2500) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  if (!isPidAlive(pid)) return true;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (_err) {
+    return false;
+  }
+  const exited = await waitForProcessExit(pid, timeoutMs);
+  if (exited) return true;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (_err) {
+    return false;
+  }
+  return waitForProcessExit(pid, 1000);
+}
+
+async function cleanupOtherProjectBotProcesses() {
+  const pids = listProjectBotPids().filter((pid) => pid !== process.pid);
+  let cleaned = 0;
+  for (const pid of pids) {
+    const ok = await terminatePidGracefully(pid, 1800);
+    if (ok) cleaned += 1;
+  }
+  return cleaned;
 }
 
 function parseTryCloudflareUrl(text) {
@@ -1909,6 +1997,8 @@ let startupTunnelNotice = "";
 let userProfile = readUserProfile();
 let onboardingState = null;
 let reminderState = readReminderState();
+let telegramConflictTimestamps = [];
+let telegramConflictRecoveryScheduled = false;
 const reminderTimers = new Map();
 
 function profileDisplayName() {
@@ -3795,6 +3885,21 @@ async function configureTelegramCommands() {
   }
 }
 
+async function tryRecoverMiniAppPortConflict(err, attempt) {
+  if (!err || err.code !== "EADDRINUSE") return false;
+  if (attempt > 1) return false;
+  const ownerPid = findListeningPidForPort(BOT_WEB_PORT);
+  if (!ownerPid || ownerPid === process.pid) return false;
+  if (!isProjectBotPid(ownerPid)) return false;
+  const stopped = await terminatePidGracefully(ownerPid, 2500);
+  if (!stopped) return false;
+  logRuntimeEvent("miniapp_port_conflict_recovered", {
+    port: BOT_WEB_PORT,
+    ownerPid,
+  });
+  return true;
+}
+
 function startMiniAppServer() {
   if (!BOT_WEBAPP_ENABLE) return Promise.resolve(false);
 
@@ -3866,14 +3971,28 @@ function startMiniAppServer() {
       }
     });
 
-    miniAppServer = app.listen(BOT_WEB_PORT, BOT_WEB_HOST, () => {
-      console.log(`Mini App API listening on http://${BOT_WEB_HOST}:${BOT_WEB_PORT}`);
-      finish(true);
-    });
-    miniAppServer.on("error", (err) => {
-      console.error("Mini App API failed to start:", err.message);
-      finish(false);
-    });
+    let attempt = 0;
+    const listenOnce = () => {
+      attempt += 1;
+      miniAppServer = app.listen(BOT_WEB_PORT, BOT_WEB_HOST, () => {
+        console.log(`Mini App API listening on http://${BOT_WEB_HOST}:${BOT_WEB_PORT}`);
+        finish(true);
+      });
+      miniAppServer.once("error", (err) => {
+        void (async () => {
+          console.error("Mini App API failed to start:", err.message);
+          const recovered = await tryRecoverMiniAppPortConflict(err, attempt);
+          if (recovered) {
+            await wait(600);
+            listenOnce();
+            return;
+          }
+          finish(false);
+        })();
+      });
+    };
+
+    listenOnce();
   });
 }
 
@@ -4392,6 +4511,11 @@ async function cleanupStaleTmuxSessions() {
 async function bootstrapRuntime() {
   writeRuntimeStateSnapshot({ phase: "booting" });
   logRuntimeEvent("runtime_bootstrap_started", { supervised: BOT_SUPERVISED });
+  const cleanedBots = await cleanupOtherProjectBotProcesses();
+  if (cleanedBots > 0) {
+    console.warn(`Cleaned concurrent bot processes during bootstrap: ${cleanedBots}`);
+    logRuntimeEvent("bootstrap_cleaned_orphan_bots", { cleanedBots });
+  }
   ensureNodePtyHelperExecutable();
   applyUserProfileToPersonality();
   updateMiniSnapshot(null);
@@ -4403,7 +4527,10 @@ async function bootstrapRuntime() {
     console.log(startupTunnelNotice);
   }
   createShell();
-  await startMiniAppServer();
+  const miniAppStarted = await startMiniAppServer();
+  if (BOT_WEBAPP_ENABLE && !miniAppStarted) {
+    throw new Error(`Mini App API could not bind on ${BOT_WEB_HOST}:${BOT_WEB_PORT}`);
+  }
   await cleanupStaleTmuxSessions();
   scheduleAllReminders();
   await configureMiniAppMenuButton();
@@ -4421,11 +4548,55 @@ async function bootstrapRuntime() {
   }, Math.max(0, BOT_STARTUP_BOOT_DELAY_MS));
 }
 
-void bootstrapRuntime();
+void bootstrapRuntime().catch((err) => {
+  const message = trimErrorMessage(err);
+  console.error("Runtime bootstrap failed:", message);
+  logRuntimeEvent("runtime_bootstrap_failed", { error: message });
+  setTimeout(() => {
+    process.exit(1);
+  }, 150);
+});
+
+async function maybeRecoverTelegramPollingConflict(err) {
+  const message = trimErrorMessage(err);
+  if (!/409 conflict/i.test(message)) return;
+  const now = Date.now();
+  telegramConflictTimestamps = telegramConflictTimestamps.filter((ts) => now - ts <= TELEGRAM_CONFLICT_WINDOW_MS);
+  telegramConflictTimestamps.push(now);
+
+  if (telegramConflictTimestamps.length < TELEGRAM_CONFLICT_MAX) return;
+  if (telegramConflictRecoveryScheduled) return;
+  telegramConflictRecoveryScheduled = true;
+
+  let cleanedBots = 0;
+  try {
+    cleanedBots = await cleanupOtherProjectBotProcesses();
+  } catch (_err) {
+    cleanedBots = 0;
+  }
+
+  logRuntimeEvent("telegram_conflict_threshold", {
+    count: telegramConflictTimestamps.length,
+    windowMs: TELEGRAM_CONFLICT_WINDOW_MS,
+    cleanedBots,
+  });
+
+  if (cleanedBots > 0) {
+    telegramConflictTimestamps = [];
+    telegramConflictRecoveryScheduled = false;
+    return;
+  }
+
+  console.error("Telegram polling conflict threshold reached, restarting process.");
+  setTimeout(() => {
+    process.exit(1);
+  }, 200);
+}
 
 bot.on("polling_error", (err) => {
   console.error("Telegram polling error:", err.message);
   logRuntimeEvent("telegram_polling_error", { error: trimErrorMessage(err) });
+  void maybeRecoverTelegramPollingConflict(err);
 });
 
 async function answerCallback(query, text = "") {

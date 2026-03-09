@@ -186,6 +186,8 @@ pm2 startup
 npm test
 npm run test:miniapp
 npm run bot:doctor
+# optional auto-cleanup of stale runtime state / duplicate processes:
+npm run bot:doctor -- --fix
 # optional (erfordert laufenden Supervisor):
 npm run bot:restart-test
 ```
