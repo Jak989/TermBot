@@ -90,7 +90,34 @@ Empfohlen fuer vollen Assistant-Betrieb:
 - `BOT_PERSONALITY_AUTO_APPLY=1`
 - `CODEX_YOLO=0` (sicherer Default)
 - `BOT_WEBAPP_ENABLE=1`
-- `BOT_WEBAPP_URL=https://...`
+- `BOT_WEBAPP_URL=https://...` (feste Domain fuer Mini-App)
+- `BOT_CLOUDFLARE_TUNNEL_MODE=named`
+- `BOT_CLOUDFLARE_TUNNEL_NAME=<dein-tunnel-name>`
+
+### Cloudflare Tunnel Modi
+
+`BOT_CLOUDFLARE_TUNNEL_MODE` steuert den Tunnel-Betrieb:
+
+- `auto` (Default): nutzt `named`, wenn `BOT_CLOUDFLARE_TUNNEL_NAME` gesetzt ist, sonst `quick` bei leerer/trycloudflare `BOT_WEBAPP_URL`
+- `named`: startet `cloudflared tunnel run <name>` (empfohlen fuer stabilen Betrieb)
+- `quick`: startet einen rotierenden `trycloudflare` Quick Tunnel
+- `off`: kein durch den Bot gemanagter Tunnel
+
+Empfohlene Named-Tunnel-Konfiguration:
+
+- `BOT_CLOUDFLARE_TUNNEL_MODE=named`
+- `BOT_CLOUDFLARE_TUNNEL_NAME=termbot`
+- `BOT_WEBAPP_URL=https://bot.example.com`
+- optional: `BOT_CLOUDFLARE_CONFIG_PATH=/Users/<user>/.cloudflared/config.yml`
+- optional statt `BOT_WEBAPP_URL`: `BOT_CLOUDFLARE_TUNNEL_HOSTNAME=bot.example.com`
+
+Minimaler Setup fuer Named Tunnel (einmalig):
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create termbot
+cloudflared tunnel route dns termbot bot.example.com
+```
 
 Optional fuer Slack:
 
@@ -142,7 +169,7 @@ Container bringt mit:
 - `node 22`
 - `tmux` (fuer Codex-Session-Backend)
 - `@openai/codex` CLI
-- `cloudflared` (Quick Tunnel)
+- `cloudflared` (Quick oder Named Tunnel)
 - Healthcheck auf `http://127.0.0.1:8787/telegram-miniapp/index.html`
 
 Wichtig fuer Codex im Container:

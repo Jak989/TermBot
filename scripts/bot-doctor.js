@@ -3,9 +3,11 @@
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const dotenv = require("dotenv");
 const { readJson, isPidAlive } = require("./lib/runtime-state");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..");
+dotenv.config({ path: path.join(PROJECT_ROOT, ".env") });
 const DATA_DIR = path.join(PROJECT_ROOT, "data");
 const RUNTIME_DIR = path.join(DATA_DIR, "runtime");
 const BOT_LOCK = path.join(RUNTIME_DIR, "bot.lock");
@@ -16,7 +18,11 @@ const EVENTS_FILE = path.join(RUNTIME_DIR, "events.jsonl");
 const CLOUDFLARED_PID_FILE = path.join(DATA_DIR, "cloudflared.pid");
 const BOT_ENTRY = path.join(PROJECT_ROOT, "bot.js");
 const SUP_ENTRY = "termbot-supervisor.js";
-const TUNNEL_TARGET = "cloudflared tunnel --url http://127.0.0.1:8787";
+const BOT_WEB_HOST = String(process.env.BOT_WEB_HOST || "127.0.0.1").trim() || "127.0.0.1";
+const BOT_WEB_PORT = Number.isFinite(Number(process.env.BOT_WEB_PORT)) ? Number(process.env.BOT_WEB_PORT) : 8787;
+const BOT_WEBAPP_URL = String(process.env.BOT_WEBAPP_URL || "").trim();
+const BOT_CLOUDFLARE_TUNNEL_MODE = String(process.env.BOT_CLOUDFLARE_TUNNEL_MODE || "auto").trim().toLowerCase();
+const BOT_CLOUDFLARE_TUNNEL_NAME = String(process.env.BOT_CLOUDFLARE_TUNNEL_NAME || "").trim();
 
 function parseArgs(argv) {
   const out = new Set();
@@ -56,6 +62,37 @@ function readSimplePidFile(filePath) {
   } catch (_err) {
     return 0;
   }
+}
+
+function isTryCloudflareUrl(rawUrl) {
+  const raw = String(rawUrl || "").trim();
+  if (!raw) return false;
+  try {
+    const parsed = new URL(raw);
+    return /\.trycloudflare\.com$/i.test(parsed.hostname);
+  } catch (_err) {
+    return /trycloudflare\.com/i.test(raw);
+  }
+}
+
+function resolveTunnelMode() {
+  if (["off", "disabled", "none"].includes(BOT_CLOUDFLARE_TUNNEL_MODE)) return "off";
+  if (BOT_CLOUDFLARE_TUNNEL_MODE === "quick") return "quick";
+  if (BOT_CLOUDFLARE_TUNNEL_MODE === "named") return "named";
+  if (BOT_CLOUDFLARE_TUNNEL_NAME) return "named";
+  if (!BOT_WEBAPP_URL || isTryCloudflareUrl(BOT_WEBAPP_URL)) return "quick";
+  return "off";
+}
+
+function expectedCloudflaredPattern(mode) {
+  if (mode === "named") {
+    if (BOT_CLOUDFLARE_TUNNEL_NAME) return `tunnel run ${BOT_CLOUDFLARE_TUNNEL_NAME}`;
+    return "tunnel run";
+  }
+  if (mode === "quick") {
+    return `--url http://${BOT_WEB_HOST}:${BOT_WEB_PORT}`;
+  }
+  return "";
 }
 
 function fileInfo(filePath) {
@@ -106,6 +143,8 @@ function killPid(pid, signal = "SIGTERM") {
 }
 
 function buildReport() {
+  const tunnelMode = resolveTunnelMode();
+  const expectedTunnelPattern = expectedCloudflaredPattern(tunnelMode);
   const botLock = readJson(BOT_LOCK, null);
   const supLock = readJson(SUP_LOCK, null);
   const supPidObj = readJson(SUP_PID_FILE, null);
@@ -113,7 +152,7 @@ function buildReport() {
   const cloudflaredPid = readSimplePidFile(CLOUDFLARED_PID_FILE);
   const botPids = listPidsByPattern(BOT_ENTRY);
   const supervisorPids = listPidsByPattern(SUP_ENTRY);
-  const cloudflaredPids = listPidsByPattern(TUNNEL_TARGET);
+  const cloudflaredPids = listPidsByPattern("cloudflared tunnel");
 
   return {
     generatedAt: new Date().toISOString(),
@@ -138,6 +177,8 @@ function buildReport() {
       markerPidAlive: isPidAlive(ready?.pid),
     },
     cloudflared: {
+      mode: tunnelMode,
+      expectedPattern: expectedTunnelPattern,
       pidFile: CLOUDFLARED_PID_FILE,
       pid: cloudflaredPid,
       pidAlive: isPidAlive(cloudflaredPid),
@@ -195,6 +236,7 @@ function applyFix(report) {
     if (pid === keepTunnelPid) continue;
     const cmd = commandLineForPid(pid);
     if (!cmd.includes("cloudflared tunnel")) continue;
+    if (report.cloudflared.expectedPattern && !cmd.includes(report.cloudflared.expectedPattern)) continue;
     if (killPid(pid, "SIGTERM")) {
       actions.push(`killed duplicate cloudflared pid=${pid}`);
     }
@@ -221,6 +263,8 @@ function printHuman(report, actions = []) {
     `supervisor pids(actual): ${report.supervisor.pids.length ? report.supervisor.pids.join(", ") : "none"}`,
     `ready marker pid: ${report.restart.marker?.pid || "-"} (alive=${report.restart.markerPidAlive})`,
     `ready marker restart_id: ${report.restart.marker?.restartId || "-"}`,
+    `cloudflared mode(expected): ${report.cloudflared.mode || "off"}`,
+    `cloudflared pattern(expected): ${report.cloudflared.expectedPattern || "-"}`,
     `cloudflared pid(file): ${report.cloudflared.pid || "-"} (alive=${report.cloudflared.pidAlive})`,
     `cloudflared pids(actual): ${report.cloudflared.pids.length ? report.cloudflared.pids.join(", ") : "none"}`,
     `tmux sessions: ${report.tmux.sessions.length ? report.tmux.sessions.join(", ") : "none"}`,

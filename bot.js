@@ -89,6 +89,10 @@ const BOT_STARTUP_BOOT_DELAY_MS = Number.isFinite(Number(process.env.BOT_STARTUP
   : 1500;
 const BOT_STARTUP_CHAT_ID = String(process.env.BOT_STARTUP_CHAT_ID || "").trim();
 const BOT_WEBAPP_URL = String(process.env.BOT_WEBAPP_URL || "").trim();
+const BOT_CLOUDFLARE_TUNNEL_MODE = String(process.env.BOT_CLOUDFLARE_TUNNEL_MODE || "auto").trim().toLowerCase();
+const BOT_CLOUDFLARE_TUNNEL_NAME = String(process.env.BOT_CLOUDFLARE_TUNNEL_NAME || "").trim();
+const BOT_CLOUDFLARE_TUNNEL_HOSTNAME = String(process.env.BOT_CLOUDFLARE_TUNNEL_HOSTNAME || "").trim();
+const BOT_CLOUDFLARE_CONFIG_PATH = String(process.env.BOT_CLOUDFLARE_CONFIG_PATH || "").trim();
 const BOT_TUNNEL_AUTO_RESTORE = String(process.env.BOT_TUNNEL_AUTO_RESTORE || "1") !== "0";
 const BOT_TUNNEL_START_TIMEOUT_MS = Number.isFinite(Number(process.env.BOT_TUNNEL_START_TIMEOUT_MS))
   ? Number(process.env.BOT_TUNNEL_START_TIMEOUT_MS)
@@ -1322,13 +1326,51 @@ function isTryCloudflareUrl(rawUrl) {
   }
 }
 
-function shouldManageQuickTunnel() {
-  if (!runtimeWebAppUrl) return true;
-  return isTryCloudflareUrl(runtimeWebAppUrl);
-}
-
 function cloudflareTunnelTargetUrl() {
   return `http://${BOT_WEB_HOST}:${BOT_WEB_PORT}`;
+}
+
+function resolveCloudflareTunnelMode() {
+  if (["off", "disabled", "none"].includes(BOT_CLOUDFLARE_TUNNEL_MODE)) return "off";
+  if (BOT_CLOUDFLARE_TUNNEL_MODE === "quick") return "quick";
+  if (BOT_CLOUDFLARE_TUNNEL_MODE === "named") return "named";
+  if (BOT_CLOUDFLARE_TUNNEL_NAME) return "named";
+  if (!runtimeWebAppUrl || isTryCloudflareUrl(runtimeWebAppUrl)) return "quick";
+  return "off";
+}
+
+function cloudflareNamedLaunchUrl() {
+  const explicitUrl = String(runtimeWebAppUrl || BOT_WEBAPP_URL || "").trim();
+  if (explicitUrl && !isTryCloudflareUrl(explicitUrl)) {
+    return resolveWebAppLaunchUrl(explicitUrl);
+  }
+  if (BOT_CLOUDFLARE_TUNNEL_HOSTNAME) {
+    return resolveWebAppLaunchUrl(`https://${BOT_CLOUDFLARE_TUNNEL_HOSTNAME}`);
+  }
+  return "";
+}
+
+function cloudflaredProcessPattern(mode) {
+  if (mode === "named") {
+    if (BOT_CLOUDFLARE_TUNNEL_NAME) return `tunnel run ${BOT_CLOUDFLARE_TUNNEL_NAME}`;
+    return "tunnel run";
+  }
+  return `cloudflared tunnel --url ${cloudflareTunnelTargetUrl()}`;
+}
+
+function buildCloudflaredSpawnArgs(mode) {
+  if (mode === "named") {
+    if (!BOT_CLOUDFLARE_TUNNEL_NAME) {
+      throw new Error("BOT_CLOUDFLARE_TUNNEL_NAME is required for named tunnel mode");
+    }
+    const args = [];
+    if (BOT_CLOUDFLARE_CONFIG_PATH) {
+      args.push("--config", BOT_CLOUDFLARE_CONFIG_PATH);
+    }
+    args.push("tunnel", "run", BOT_CLOUDFLARE_TUNNEL_NAME);
+    return args;
+  }
+  return ["tunnel", "--url", cloudflareTunnelTargetUrl(), "--protocol", "http2", "--ha-connections", "4"];
 }
 
 function wait(ms) {
@@ -1362,9 +1404,9 @@ async function stopCloudflaredProcess(pid) {
   await waitForProcessExit(pid, 1000);
 }
 
-function cleanupOrphanCloudflaredProcesses(trackedPid) {
-  const target = cloudflareTunnelTargetUrl();
-  const probe = spawnSync("pgrep", ["-f", `cloudflared tunnel --url ${target}`], {
+function cleanupOrphanCloudflaredProcesses(trackedPid, mode) {
+  const pattern = cloudflaredProcessPattern(mode);
+  const probe = spawnSync("pgrep", ["-f", pattern], {
     encoding: "utf8",
   });
   if (!probe || typeof probe.stdout !== "string") return 0;
@@ -1446,29 +1488,25 @@ async function resolvesWebAppHostViaPublicDns(rawUrl) {
   }
 }
 
-function spawnCloudflaredTunnelProcess() {
+function spawnCloudflaredTunnelProcess(mode) {
   ensureParentDir(CLOUDFLARED_LOG_PATH);
   fs.writeFileSync(CLOUDFLARED_LOG_PATH, "", "utf8");
 
   const logFd = fs.openSync(CLOUDFLARED_LOG_PATH, "a");
   let child;
   try {
-    child = spawn(
-      "cloudflared",
-      ["tunnel", "--url", cloudflareTunnelTargetUrl(), "--protocol", "http2", "--ha-connections", "4"],
-      {
+    child = spawn("cloudflared", buildCloudflaredSpawnArgs(mode), {
       cwd: RESOLVED_BOT_CWD,
       env: process.env,
       detached: true,
       stdio: ["ignore", logFd, logFd],
-      }
-    );
+    });
   } finally {
     fs.closeSync(logFd);
   }
 
   if (!child || !Number.isSafeInteger(child.pid) || child.pid <= 0) {
-    throw new Error("cloudflared failed to start");
+    throw new Error(`cloudflared failed to start (${mode})`);
   }
   child.unref();
   writePidFile(CLOUDFLARED_PID_PATH, child.pid);
@@ -1482,8 +1520,30 @@ async function ensureCloudflareTunnelOnStartup() {
   if (!BOT_TUNNEL_AUTO_RESTORE) {
     return { ok: true, skipped: true, notice: "Cloudflare check skipped: BOT_TUNNEL_AUTO_RESTORE=0" };
   }
-  if (!shouldManageQuickTunnel()) {
-    return { ok: true, skipped: true, notice: "Cloudflare check skipped: BOT_WEBAPP_URL is not a trycloudflare URL" };
+  const tunnelMode = resolveCloudflareTunnelMode();
+  if (tunnelMode === "off") {
+    return { ok: true, skipped: true, notice: "Cloudflare check skipped: managed tunnel mode is off" };
+  }
+
+  if (tunnelMode === "named") {
+    if (!BOT_CLOUDFLARE_TUNNEL_NAME) {
+      return {
+        ok: false,
+        skipped: false,
+        started: false,
+        notice: "Cloudflare named tunnel requires BOT_CLOUDFLARE_TUNNEL_NAME",
+      };
+    }
+    const namedLaunchUrl = cloudflareNamedLaunchUrl();
+    if (!namedLaunchUrl) {
+      return {
+        ok: false,
+        skipped: false,
+        started: false,
+        notice: "Cloudflare named tunnel requires BOT_WEBAPP_URL or BOT_CLOUDFLARE_TUNNEL_HOSTNAME",
+      };
+    }
+    setRuntimeWebAppUrl(namedLaunchUrl, false);
   }
 
   const pid = readPidFile(CLOUDFLARED_PID_PATH);
@@ -1491,16 +1551,19 @@ async function ensureCloudflareTunnelOnStartup() {
     clearPidFile(CLOUDFLARED_PID_PATH);
   }
   const trackedPid = readPidFile(CLOUDFLARED_PID_PATH);
-  const cleanedOrphans = cleanupOrphanCloudflaredProcesses(trackedPid);
+  const cleanedOrphans = cleanupOrphanCloudflaredProcesses(trackedPid, tunnelMode);
   if (cleanedOrphans > 0) {
     console.log(`Cleaned orphan cloudflared processes: ${cleanedOrphans}`);
   }
 
   const runningPid = readPidFile(CLOUDFLARED_PID_PATH);
   if (runningPid && isPidAlive(runningPid)) {
-    const existingUrl = readCloudflaredUrlFromLog();
-    if (existingUrl) setRuntimeWebAppUrl(existingUrl, true);
-    const healthUrl = existingUrl || runtimeWebAppUrl;
+    let healthUrl = runtimeWebAppUrl;
+    if (tunnelMode === "quick") {
+      const existingUrl = readCloudflaredUrlFromLog();
+      if (existingUrl) setRuntimeWebAppUrl(existingUrl, true);
+      healthUrl = existingUrl || runtimeWebAppUrl;
+    }
     const reachable = await isWebAppLaunchReachable(healthUrl);
     const dnsReachable = reachable ? true : await resolvesWebAppHostViaPublicDns(healthUrl);
     if (!reachable && !dnsReachable) {
@@ -1511,14 +1574,14 @@ async function ensureCloudflareTunnelOnStartup() {
         ok: true,
         skipped: false,
         started: false,
-        notice: `Cloudflare tunnel active (pid=${runningPid}).`,
+        notice: `Cloudflare tunnel active (${tunnelMode}, pid=${runningPid}).`,
       };
     }
   }
 
   let startedPid;
   try {
-    startedPid = spawnCloudflaredTunnelProcess();
+    startedPid = spawnCloudflaredTunnelProcess(tunnelMode);
   } catch (err) {
     return {
       ok: false,
@@ -1531,6 +1594,39 @@ async function ensureCloudflareTunnelOnStartup() {
   const waitTimeoutMs = Math.max(5000, BOT_TUNNEL_START_TIMEOUT_MS);
   const deadline = Date.now() + waitTimeoutMs;
   let lastUnreachableUrl = "";
+
+  if (tunnelMode === "named") {
+    while (Date.now() < deadline) {
+      if (!isPidAlive(startedPid)) {
+        clearPidFile(CLOUDFLARED_PID_PATH);
+        return {
+          ok: false,
+          skipped: false,
+          started: true,
+          notice: "Cloudflare named tunnel exited unexpectedly while starting.",
+        };
+      }
+      const reachable = await isWebAppLaunchReachable(runtimeWebAppUrl);
+      const dnsReachable = reachable ? true : await resolvesWebAppHostViaPublicDns(runtimeWebAppUrl);
+      if (reachable || dnsReachable) {
+        return {
+          ok: true,
+          skipped: false,
+          started: true,
+          notice: `Cloudflare tunnel restored (${tunnelMode}): ${runtimeWebAppUrl}`,
+        };
+      }
+      await sleep(1000);
+    }
+
+    return {
+      ok: false,
+      skipped: false,
+      started: true,
+      notice: `Cloudflare tunnel started (pid=${startedPid}) but URL not reachable: ${runtimeWebAppUrl}`,
+    };
+  }
+
   while (Date.now() < deadline) {
     if (!isPidAlive(startedPid)) {
       clearPidFile(CLOUDFLARED_PID_PATH);
@@ -1551,7 +1647,7 @@ async function ensureCloudflareTunnelOnStartup() {
           ok: true,
           skipped: false,
           started: true,
-          notice: `Cloudflare tunnel restored: ${nextUrl}`,
+          notice: `Cloudflare tunnel restored (${tunnelMode}): ${nextUrl}`,
         };
       }
       if (nextUrl !== lastUnreachableUrl) {
