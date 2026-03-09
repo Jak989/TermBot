@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const https = require("https");
+const dns = require("node:dns").promises;
 const { spawn, spawnSync } = require("child_process");
 const dotenv = require("dotenv");
 const express = require("express");
@@ -91,7 +92,7 @@ const BOT_WEBAPP_URL = String(process.env.BOT_WEBAPP_URL || "").trim();
 const BOT_TUNNEL_AUTO_RESTORE = String(process.env.BOT_TUNNEL_AUTO_RESTORE || "1") !== "0";
 const BOT_TUNNEL_START_TIMEOUT_MS = Number.isFinite(Number(process.env.BOT_TUNNEL_START_TIMEOUT_MS))
   ? Number(process.env.BOT_TUNNEL_START_TIMEOUT_MS)
-  : 40000;
+  : 10000;
 const BOT_WEB_HOST = process.env.BOT_WEB_HOST || "127.0.0.1";
 const BOT_WEB_PORT = Number.isFinite(Number(process.env.BOT_WEB_PORT))
   ? Number(process.env.BOT_WEB_PORT)
@@ -1429,6 +1430,22 @@ async function isWebAppLaunchReachable(rawUrl) {
   return probeUrlOnce(launch, 3500);
 }
 
+async function resolvesWebAppHostViaPublicDns(rawUrl) {
+  const launch = resolveWebAppLaunchUrl(rawUrl);
+  if (!launch) return false;
+  try {
+    const parsed = new URL(launch);
+    const hostname = String(parsed.hostname || "").trim();
+    if (!hostname) return false;
+    const resolver = new dns.Resolver();
+    resolver.setServers(["1.1.1.1", "8.8.8.8"]);
+    const records = await resolver.resolve(hostname);
+    return Array.isArray(records) && records.length > 0;
+  } catch (_err) {
+    return false;
+  }
+}
+
 function spawnCloudflaredTunnelProcess() {
   ensureParentDir(CLOUDFLARED_LOG_PATH);
   fs.writeFileSync(CLOUDFLARED_LOG_PATH, "", "utf8");
@@ -1485,7 +1502,8 @@ async function ensureCloudflareTunnelOnStartup() {
     if (existingUrl) setRuntimeWebAppUrl(existingUrl, true);
     const healthUrl = existingUrl || runtimeWebAppUrl;
     const reachable = await isWebAppLaunchReachable(healthUrl);
-    if (!reachable) {
+    const dnsReachable = reachable ? true : await resolvesWebAppHostViaPublicDns(healthUrl);
+    if (!reachable && !dnsReachable) {
       await stopCloudflaredProcess(runningPid);
       clearPidFile(CLOUDFLARED_PID_PATH);
     } else {
@@ -1512,6 +1530,7 @@ async function ensureCloudflareTunnelOnStartup() {
 
   const waitTimeoutMs = Math.max(5000, BOT_TUNNEL_START_TIMEOUT_MS);
   const deadline = Date.now() + waitTimeoutMs;
+  let lastUnreachableUrl = "";
   while (Date.now() < deadline) {
     if (!isPidAlive(startedPid)) {
       clearPidFile(CLOUDFLARED_PID_PATH);
@@ -1524,13 +1543,21 @@ async function ensureCloudflareTunnelOnStartup() {
     }
     const nextUrl = readCloudflaredUrlFromLog();
     if (nextUrl) {
-      setRuntimeWebAppUrl(nextUrl, true);
-      return {
-        ok: true,
-        skipped: false,
-        started: true,
-        notice: `Cloudflare tunnel restored: ${nextUrl}`,
-      };
+      const reachable = await isWebAppLaunchReachable(nextUrl);
+      const dnsReachable = reachable ? true : await resolvesWebAppHostViaPublicDns(nextUrl);
+      if (reachable || dnsReachable) {
+        setRuntimeWebAppUrl(nextUrl, true);
+        return {
+          ok: true,
+          skipped: false,
+          started: true,
+          notice: `Cloudflare tunnel restored: ${nextUrl}`,
+        };
+      }
+      if (nextUrl !== lastUnreachableUrl) {
+        lastUnreachableUrl = nextUrl;
+        console.warn(`Cloudflare tunnel URL not reachable yet: ${nextUrl}`);
+      }
     }
     await sleep(1000);
   }
@@ -1539,7 +1566,9 @@ async function ensureCloudflareTunnelOnStartup() {
     ok: false,
     skipped: false,
     started: true,
-    notice: `Cloudflare tunnel started (pid=${startedPid}) but no URL detected within ${waitTimeoutMs}ms.`,
+    notice: lastUnreachableUrl
+      ? `Cloudflare tunnel started (pid=${startedPid}) but URL not reachable: ${lastUnreachableUrl}`
+      : `Cloudflare tunnel started (pid=${startedPid}) but no URL detected within ${waitTimeoutMs}ms.`,
   };
 }
 
@@ -3920,6 +3949,9 @@ function startMiniAppServer() {
 
     const miniAppRoot = path.join(__dirname, "public", "telegram-miniapp");
     app.use("/telegram-miniapp", express.static(miniAppRoot, { index: "index.html" }));
+    app.get("/", (_req, res) => {
+      res.redirect("/miniapp");
+    });
     app.get("/miniapp", (_req, res) => {
       res.redirect("/telegram-miniapp/index.html");
     });
@@ -4519,17 +4551,17 @@ async function bootstrapRuntime() {
   ensureNodePtyHelperExecutable();
   applyUserProfileToPersonality();
   updateMiniSnapshot(null);
+  createShell();
+  const miniAppStarted = await startMiniAppServer();
+  if (BOT_WEBAPP_ENABLE && !miniAppStarted) {
+    throw new Error(`Mini App API could not bind on ${BOT_WEB_HOST}:${BOT_WEB_PORT}`);
+  }
   const tunnelState = await ensureCloudflareTunnelOnStartup();
   startupTunnelNotice = tunnelState.notice || "";
   if (!tunnelState.ok) {
     console.warn(startupTunnelNotice);
   } else if (startupTunnelNotice) {
     console.log(startupTunnelNotice);
-  }
-  createShell();
-  const miniAppStarted = await startMiniAppServer();
-  if (BOT_WEBAPP_ENABLE && !miniAppStarted) {
-    throw new Error(`Mini App API could not bind on ${BOT_WEB_HOST}:${BOT_WEB_PORT}`);
   }
   await cleanupStaleTmuxSessions();
   scheduleAllReminders();
