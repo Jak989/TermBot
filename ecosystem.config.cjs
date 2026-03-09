@@ -2,7 +2,7 @@ module.exports = {
   apps: [
     {
       name: "telegram-terminal-bot",
-      script: "bot.js",
+      script: "scripts/termbot-supervisor.js",
       cwd: __dirname,
       autorestart: true,
       watch: false,

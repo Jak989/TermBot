@@ -15,4 +15,4 @@ echo "[entrypoint] npm: $(npm -v)"
 echo "[entrypoint] tmux: $(tmux -V | head -n 1)"
 echo "[entrypoint] codex: $(codex --version 2>/dev/null || echo 'not available')"
 
-exec node bot.js
+exec node scripts/termbot-supervisor.js

@@ -5,8 +5,9 @@
   "description": "Telegram terminal bot with persistent Codex sessions and mini-app live panel",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js",
-    "bot": "node bot.js",
+    "start": "node scripts/termbot-supervisor.js",
+    "bot": "node scripts/termbot-supervisor.js",
+    "bot:direct": "node bot.js",
     "bot:start": "node scripts/codexbot-cli.js bot start",
     "bot:stop": "node scripts/codexbot-cli.js bot stop",
     "bot:status": "node scripts/codexbot-cli.js bot status",
@@ -15,7 +16,11 @@
     "bot:cancel": "node scripts/codexbot-cli.js bot cancel",
     "bot:repl": "node scripts/codexbot-cli.js bot repl",
     "bot:logs": "node scripts/codexbot-cli.js bot logs",
+    "bot:doctor": "node scripts/bot-doctor.js",
+    "bot:restart-test": "node scripts/bot-restart-test.js",
     "test:miniapp": "node --test scripts/tests/miniapp-render.test.js",
+    "test:runtime": "node --test scripts/tests/runtime-state.test.js",
+    "test": "npm run test:miniapp && npm run test:runtime",
     "bot:tunnel": "cloudflared tunnel --url http://127.0.0.1:8787",
     "postinstall": "node scripts/fix-node-pty-perms.js"
   },

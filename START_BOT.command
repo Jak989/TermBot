@@ -76,7 +76,8 @@ fi
 # Extra cleanup for stale processes not tracked by pid file
 if command -v pkill >/dev/null 2>&1; then
   pkill -f "cloudflared tunnel --url http://127.0.0.1:8787" >/dev/null 2>&1 || true
-  pkill -f "node bot.js" >/dev/null 2>&1 || true
+  pkill -f "scripts/termbot-supervisor.js" >/dev/null 2>&1 || true
+  pkill -f "/Users/jakob/Documents/New project/bot.js" >/dev/null 2>&1 || true
 fi
 
 : > "$CLOUDFLARED_LOG"
@@ -120,4 +121,4 @@ echo ".env aktualisiert."
 echo "Starte Bot..."
 echo ""
 
-npm run bot
+npm run start
