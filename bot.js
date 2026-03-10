@@ -3214,22 +3214,22 @@ async function maybeNotifyReplyButtons(run) {
   if (run.awaitingTurnCompletion || run.done) return;
 
   const replyPrompt = extractReplyPrompt(run.screenTextFull || run.screenText || "");
-  if (!replyPrompt) {
-    run.replyPromptSuppressed = "";
-    return;
-  }
+  if (!replyPrompt) return;
 
   const signature = replyPrompt.toLowerCase();
-  const now = Date.now();
+  if (run.replyPromptSuppressed && run.replyPromptSuppressed !== signature) {
+    run.replyPromptSuppressed = "";
+  }
   if (run.replyPromptSuppressed === signature) {
     return;
   }
-  if (run.lastReplyPrompt === signature && now - (run.lastReplyButtonsAt || 0) < REPLY_BUTTON_COOLDOWN_MS) {
+  // Never respawn the same follow-up prompt repeatedly.
+  if (run.lastReplyPrompt === signature) {
     return;
   }
 
   run.lastReplyPrompt = signature;
-  run.lastReplyButtonsAt = now;
+  run.lastReplyButtonsAt = Date.now();
   pushRunEvent(run, "reply prompt detected");
 
   const keyboard = [
