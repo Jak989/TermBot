@@ -77,8 +77,14 @@ const BOT_TIMEOUT_MS = Number(process.env.BOT_TIMEOUT_MS || 900000);
 const BOT_STATUS_INTERVAL_MS = Number(process.env.BOT_STATUS_INTERVAL_MS || 0);
 const BOT_LIVE_STATUS_INTERVAL_MS = Number(process.env.BOT_LIVE_STATUS_INTERVAL_MS || 2000);
 const BOT_ENTER_FALLBACK_MS = Number(process.env.BOT_ENTER_FALLBACK_MS || 1200);
+const BOT_SUBMIT_MAX_ATTEMPTS = Number.isFinite(Number(process.env.BOT_SUBMIT_MAX_ATTEMPTS))
+  ? Math.max(3, Math.min(12, Number(process.env.BOT_SUBMIT_MAX_ATTEMPTS)))
+  : 8;
 const BOT_CAPTURE_LINES = Number(process.env.BOT_CAPTURE_LINES || 120);
 const BOT_TURN_IDLE_DONE_MS = Number(process.env.BOT_TURN_IDLE_DONE_MS || 5000);
+const BOT_CODEX_READY_TIMEOUT_MS = Number.isFinite(Number(process.env.BOT_CODEX_READY_TIMEOUT_MS))
+  ? Math.max(1000, Number(process.env.BOT_CODEX_READY_TIMEOUT_MS))
+  : 15000;
 const BOT_CODEX_BACKEND = String(process.env.BOT_CODEX_BACKEND || "tmux").toLowerCase();
 const BOT_TMUX_BIN = process.env.BOT_TMUX_BIN || "tmux";
 const BOT_PROMPT_ON_START = String(process.env.BOT_PROMPT_ON_START || "1") !== "0";
@@ -3266,11 +3272,20 @@ async function tickCodexRun(run) {
   }
 }
 
-const SUBMIT_ATTEMPTS = [
-  { label: "CR", keys: ["C-m"] },
-  { label: "LF", keys: ["C-j"] },
-  { label: "CRLF", keys: ["C-m", "C-j"] },
-];
+const SUBMIT_ATTEMPTS = (() => {
+  const attempts = [];
+  for (let i = 0; i < BOT_SUBMIT_MAX_ATTEMPTS; i += 1) {
+    attempts.push({ label: `CR#${i + 1}`, keys: ["C-m"] });
+  }
+  attempts.push({ label: "LF", keys: ["C-j"] });
+  attempts.push({ label: "CRLF", keys: ["C-m", "C-j"] });
+  return attempts;
+})();
+
+function screenIndicatesCodexWorking(run) {
+  const combined = `${run?.screenTextFull || ""}\n${run?.screenText || ""}`;
+  return /working\s*\(|esc to interrupt/i.test(combined);
+}
 
 async function performSubmitAttempt(run, token, baseRevision, index) {
   if (!isActiveCodexRun(run)) return;
@@ -3298,8 +3313,8 @@ async function checkSubmitProgress(run, token, baseRevision, index) {
   if (!isActiveCodexRun(run)) return;
   if (run.submitToken !== token) return;
 
-  if (run.screenRevision > baseRevision) {
-    pushRunEvent(run, "submit acknowledged by screen change");
+  if (screenIndicatesCodexWorking(run)) {
+    pushRunEvent(run, "submit acknowledged by codex working state");
     await upsertCodexStatus(run, false);
     return;
   }
@@ -3322,8 +3337,50 @@ async function submitWithFallback(run, reasonLabel) {
   await performSubmitAttempt(run, token, baseRevision, 0);
 }
 
+function looksLikeCodexPrompt(screenText) {
+  const text = String(screenText || "");
+  if (!text) return false;
+  const hasBranding = /openai codex|gpt-\d+/i.test(text);
+  const hasPrompt = /(^|\n)\s*›\s/m.test(text);
+  return hasBranding && hasPrompt;
+}
+
+async function ensureCodexPromptReady(run, reasonLabel = "input") {
+  if (!isActiveCodexRun(run)) return false;
+  if (run.promptReady) return true;
+  if (run.promptReadyPromise) return run.promptReadyPromise;
+
+  run.promptReadyPromise = (async () => {
+    const deadline = Date.now() + BOT_CODEX_READY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (!isActiveCodexRun(run)) return false;
+      try {
+        const captured = await tmux.capturePane(BOT_TMUX_BIN, run.sessionName, BOT_CAPTURE_LINES);
+        const normalized = normalizeCapturedScreen(captured);
+        if (looksLikeCodexPrompt(normalized)) {
+          run.promptReady = true;
+          pushRunEvent(run, `codex prompt ready (${reasonLabel})`);
+          return true;
+        }
+      } catch (err) {
+        pushRunEvent(run, `prompt check failed: ${trimErrorMessage(err)}`);
+      }
+      await wait(250);
+    }
+    pushRunEvent(run, `codex prompt wait timeout (${BOT_CODEX_READY_TIMEOUT_MS}ms, reason=${reasonLabel})`);
+    return false;
+  })();
+
+  try {
+    return await run.promptReadyPromise;
+  } finally {
+    run.promptReadyPromise = null;
+  }
+}
+
 async function sendCodexInputLine(run, text) {
   if (!isActiveCodexRun(run)) return;
+  await ensureCodexPromptReady(run, "line-input");
   await tmux.sendLiteral(BOT_TMUX_BIN, run.sessionName, text);
   run.inputCount += 1;
   run.lastInputPreview = shortInputPreview(text);
@@ -3379,6 +3436,7 @@ async function maybeAutoApplyPersonality(run) {
 
 async function sendCodexRaw(run, payload) {
   if (!isActiveCodexRun(run)) return;
+  await ensureCodexPromptReady(run, "raw-input");
   await tmux.sendLiteral(BOT_TMUX_BIN, run.sessionName, payload);
   run.inputCount += 1;
   run.lastInputPreview = `[raw] ${shortInputPreview(payload)}`;
@@ -3478,6 +3536,8 @@ async function startCodexTmuxRun(chatId, command, options = {}) {
     personalityApplied: false,
     personalityStatus: BOT_PERSONALITY_AUTO_APPLY ? "pending" : "disabled",
     personalityPath: resolvePersonalityFilePath(BOT_PERSONALITY_FILE),
+    promptReady: false,
+    promptReadyPromise: null,
     cancelRequested: false,
     cancelReason: null,
     timeoutTimer: null,
