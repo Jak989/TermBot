@@ -2690,7 +2690,6 @@ function beginNewTurn(run, reason) {
   run.turnHadAnyChange = false;
   run.responseMessageId = null;
   run.lastResponseText = "";
-  run.lastReplyPrompt = "";
   pushRunEvent(run, `turn ${run.turnIndex} started (${reason})`);
 }
 
@@ -2700,6 +2699,20 @@ async function notifyTurnThinking(run) {
   if (run.lastThinkingTurn === run.turnIndex) return;
   run.lastThinkingTurn = run.turnIndex;
   await sendMessage(run.chatId, "thinking ...");
+}
+
+function currentReplyPromptSignature(run) {
+  const prompt = extractReplyPrompt(run?.screenTextFull || run?.screenText || "");
+  return prompt ? prompt.toLowerCase() : "";
+}
+
+function suppressCurrentReplyPrompt(run, reason) {
+  const signature = currentReplyPromptSignature(run) || run.lastReplyPrompt || "";
+  if (!signature) return;
+  if (run.replyPromptSuppressed === signature) return;
+  run.replyPromptSuppressed = signature;
+  run.replyPromptSuppressedAt = Date.now();
+  pushRunEvent(run, `reply prompt suppressed (${reason})`);
 }
 
 function codexRuntimeCommandMessage(run) {
@@ -3201,10 +3214,16 @@ async function maybeNotifyReplyButtons(run) {
   if (run.awaitingTurnCompletion || run.done) return;
 
   const replyPrompt = extractReplyPrompt(run.screenTextFull || run.screenText || "");
-  if (!replyPrompt) return;
+  if (!replyPrompt) {
+    run.replyPromptSuppressed = "";
+    return;
+  }
 
   const signature = replyPrompt.toLowerCase();
   const now = Date.now();
+  if (run.replyPromptSuppressed === signature) {
+    return;
+  }
   if (run.lastReplyPrompt === signature && now - (run.lastReplyButtonsAt || 0) < REPLY_BUTTON_COOLDOWN_MS) {
     return;
   }
@@ -3381,6 +3400,7 @@ async function ensureCodexPromptReady(run, reasonLabel = "input") {
 async function sendCodexInputLine(run, text) {
   if (!isActiveCodexRun(run)) return;
   await ensureCodexPromptReady(run, "line-input");
+  suppressCurrentReplyPrompt(run, "text-input");
   await tmux.sendLiteral(BOT_TMUX_BIN, run.sessionName, text);
   run.inputCount += 1;
   run.lastInputPreview = shortInputPreview(text);
@@ -3437,6 +3457,7 @@ async function maybeAutoApplyPersonality(run) {
 async function sendCodexRaw(run, payload) {
   if (!isActiveCodexRun(run)) return;
   await ensureCodexPromptReady(run, "raw-input");
+  suppressCurrentReplyPrompt(run, "raw-input");
   await tmux.sendLiteral(BOT_TMUX_BIN, run.sessionName, payload);
   run.inputCount += 1;
   run.lastInputPreview = `[raw] ${shortInputPreview(payload)}`;
@@ -3533,6 +3554,8 @@ async function startCodexTmuxRun(chatId, command, options = {}) {
     lastThinkingTurn: 0,
     lastReplyPrompt: "",
     lastReplyButtonsAt: 0,
+    replyPromptSuppressed: "",
+    replyPromptSuppressedAt: 0,
     personalityApplied: false,
     personalityStatus: BOT_PERSONALITY_AUTO_APPLY ? "pending" : "disabled",
     personalityPath: resolvePersonalityFilePath(BOT_PERSONALITY_FILE),
@@ -4847,10 +4870,12 @@ bot.on("callback_query", async (query) => {
       return;
     }
     if (action === "manual") {
+      suppressCurrentReplyPrompt(run, "manual-reply");
       await sendMessage(chatId, "Please send your custom reply now as a normal text message.");
       return;
     }
     if (action === "no_but") {
+      suppressCurrentReplyPrompt(run, "manual-reason");
       await sendMessage(chatId, "Please send your reason now. I will send it as: no but <reason>.");
       return;
     }
