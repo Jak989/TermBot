@@ -2540,6 +2540,14 @@ function codexTurnState(run) {
 
 function buildTurnResultTwoLiner(run) {
   const raw = String(run?.screenTextFull || run?.screenText || "");
+  const assistantBlock = extractCodexAssistantBlock(raw);
+  if (assistantBlock) {
+    let trimmed = assistantBlock;
+    if (trimmed.length > BOT_CHAT_ESSENTIAL_MAX_CHARS) {
+      trimmed = `${trimmed.slice(0, Math.max(0, BOT_CHAT_ESSENTIAL_MAX_CHARS - 1))}…`;
+    }
+    return trimmed;
+  }
   const lowerPreview = String(run?.lastInputPreview || "").toLowerCase();
   const noisePatterns = [
     /^thinking\s*\.\.\.$/i,
@@ -2581,6 +2589,47 @@ function buildTurnResultTwoLiner(run) {
     essential = `${essential.slice(0, Math.max(0, BOT_CHAT_ESSENTIAL_MAX_CHARS - 1))}…`;
   }
   return essential;
+}
+
+function extractCodexAssistantBlock(screenText) {
+  const lines = String(screenText || "").split("\n");
+  if (!lines.length) return "";
+
+  let start = -1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (/^\s*•\s+/.test(lines[i])) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return "";
+
+  const collected = [];
+  for (let i = start; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (i > start && /^\s*›\s/.test(line)) break;
+    if (i > start && /^\s*gpt-\d+/i.test(line)) break;
+    if (i > start && /^\s*Tip:/i.test(line)) break;
+    if (i > start && /^\s*╭|^\s*╰/.test(line)) break;
+    if (i > start && /^\s*model:\s*/i.test(line)) break;
+
+    const normalized = line
+      .replace(/^\s*•\s+/, "")
+      .replace(/^\s{2,}/, "")
+      .trimEnd();
+    if (!normalized.trim()) {
+      if (collected.length && collected[collected.length - 1] !== "") {
+        collected.push("");
+      }
+      continue;
+    }
+    collected.push(normalized.trim());
+  }
+
+  const joined = collected.join("\n").trim();
+  if (!joined) return "";
+  if (joined.length < 8) return "";
+  return joined;
 }
 
 function buildMiniAppSnapshot(run = activeRun) {
@@ -3029,15 +3078,18 @@ function isCodexCommand(text) {
 }
 
 function buildCodexResponseMessage(run, isFinal = false) {
-  const statusLabel = isFinal ? "DONE" : "LIVE";
-  const block = [
-    "==============================",
-    `[ ANSWER | ${statusLabel} ]`,
-    "==============================",
-    "",
-    run.screenText || DEFAULT_SCREEN_TEXT,
-  ].join("\n");
-  return `<pre>${escapeHtml(block)}</pre>`;
+  const summary = buildTurnResultTwoLiner(run);
+  const lines = [];
+  if (!isFinal && codexTurnState(run) === "thinking ...") {
+    lines.push("thinking ...");
+    if (summary && summary !== "Kein klarer Ergebnis-Text erkannt.") {
+      lines.push("");
+      lines.push(summary);
+    }
+  } else {
+    lines.push(summary);
+  }
+  return escapeHtml(lines.join("\n"));
 }
 
 function buildCodexSystemMessage(run, isFinal = false) {
@@ -3202,7 +3254,9 @@ async function maybeNotifyTurnDone(run) {
   run.awaitingTurnCompletion = false;
   run.turnDoneNotified = true;
   pushRunEvent(run, `turn ${run.turnIndex} considered done after ${idleMs}ms idle`);
-  await sendMessage(run.chatId, buildTurnResultTwoLiner(run));
+  if (!BOT_CHAT_CODEX_FEEDBACK) {
+    await sendMessage(run.chatId, buildTurnResultTwoLiner(run));
+  }
   if (BOT_CHAT_SEND_DONE_MARKER) {
     await sendMessage(run.chatId, "done");
   }
