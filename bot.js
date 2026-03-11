@@ -1839,10 +1839,8 @@ async function sendLongText(chatId, text, options = {}) {
   if (!chunks.length) return null;
 
   let last = null;
-  for (let i = 0; i < chunks.length; i += 1) {
-    const chunk = chunks[i];
-    const prefix = chunks.length > 1 ? `(Teil ${i + 1}/${chunks.length})\n` : "";
-    last = await sendMessage(chatId, `${prefix}${chunk}`, options);
+  for (const chunk of chunks) {
+    last = await sendMessage(chatId, chunk, options);
   }
   return last;
 }
@@ -2622,6 +2620,12 @@ function buildTurnResultTwoLiner(run) {
     /^\s*directory:\s*/i,
     /^\s*Tip:\s*/i,
     /^\s*\(Teil\s+\d+\/\d+\)\s*$/i,
+    /^\s*searched\s+/i,
+    /^\s*profile source:\s*/i,
+    /^\s*use the following operating profile/i,
+    /^\s*\[profile_(start|end)\]/i,
+    /^\s*##\s*\d+\./i,
+    /^\s*###\s+/i,
   ];
 
   const cleaned = raw
@@ -2653,41 +2657,80 @@ function extractCodexAssistantBlock(screenText) {
   const lines = String(screenText || "").split("\n");
   if (!lines.length) return "";
 
-  let start = -1;
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    if (/^\s*•\s+/.test(lines[i])) {
-      start = i;
-      break;
-    }
-  }
-  if (start === -1) return "";
+  const segments = [];
+  let current = null;
 
-  const collected = [];
-  for (let i = start; i < lines.length; i += 1) {
-    const line = lines[i];
-    if (i > start && /^\s*›\s/.test(line)) break;
-    if (i > start && /^\s*gpt-\d+/i.test(line)) break;
-    if (i > start && /^\s*Tip:/i.test(line)) break;
-    if (i > start && /^\s*╭|^\s*╰/.test(line)) break;
-    if (i > start && /^\s*model:\s*/i.test(line)) break;
+  const flush = () => {
+    if (!current || !current.length) return;
+    const joined = current.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    if (joined) segments.push(joined);
+    current = null;
+  };
 
-    const normalized = line
-      .replace(/^\s*•\s+/, "")
-      .replace(/^\s{2,}/, "")
-      .trimEnd();
-    if (!normalized.trim()) {
-      if (collected.length && collected[collected.length - 1] !== "") {
-        collected.push("");
-      }
+  for (const line of lines) {
+    if (/^\s*•\s+/.test(line)) {
+      flush();
+      const first = line.replace(/^\s*•\s+/, "").trimEnd();
+      current = first ? [first] : [];
       continue;
     }
-    collected.push(normalized.trim());
-  }
+    if (!current) continue;
 
-  const joined = collected.join("\n").trim();
-  if (!joined) return "";
-  if (joined.length < 8) return "";
-  return joined;
+    if (/^\s*›\s/.test(line)) {
+      flush();
+      break;
+    }
+    if (/^\s*gpt-\d+/i.test(line)) {
+      flush();
+      break;
+    }
+    if (/^\s*Tip:/i.test(line)) {
+      flush();
+      break;
+    }
+    if (/^\s*╭|^\s*╰/.test(line)) {
+      flush();
+      break;
+    }
+    if (/^\s*model:\s*/i.test(line)) {
+      flush();
+      break;
+    }
+    if (/^\s*directory:\s*/i.test(line)) {
+      flush();
+      break;
+    }
+
+    const normalized = line.replace(/^\s{2,}/, "").trimEnd();
+    if (!normalized.trim()) {
+      if (current.length && current[current.length - 1] !== "") current.push("");
+      continue;
+    }
+    current.push(normalized.trim());
+  }
+  flush();
+
+  const isMetaSegment = (text) => {
+    const lower = text.toLowerCase();
+    if (!lower) return true;
+    if (lower.includes("[profile_start]") || lower.includes("[profile_end]")) return true;
+    if (lower.includes("persoenlichkeits- und rollenprofil")) return true;
+    if (lower.includes("profil source:")) return true;
+    if (lower.includes("use the following operating profile")) return true;
+    if (lower.includes("aktueller status") && lower.includes("naechste 1-3 schritte")) return true;
+    if (/^searched\s+/im.test(lower)) return true;
+    if (/^ich hole kurz/im.test(lower)) return true;
+    if (/^i('|’)ll quickly/im.test(lower)) return true;
+    return false;
+  };
+
+  for (let i = segments.length - 1; i >= 0; i -= 1) {
+    const segment = segments[i].trim();
+    if (segment.length < 8) continue;
+    if (isMetaSegment(segment)) continue;
+    return segment;
+  }
+  return "";
 }
 
 function buildMiniAppSnapshot(run = activeRun) {
