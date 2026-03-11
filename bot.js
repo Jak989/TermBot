@@ -122,6 +122,11 @@ const BOT_CHAT_CODEX_FEEDBACK = String(process.env.BOT_CHAT_CODEX_FEEDBACK || "0
 const BOT_CHAT_INCLUDE_SYSTEM_META = String(process.env.BOT_CHAT_INCLUDE_SYSTEM_META || "0") !== "0";
 const BOT_CHAT_SEND_THINKING_MARKER = String(process.env.BOT_CHAT_SEND_THINKING_MARKER || "0") !== "0";
 const BOT_CHAT_SEND_DONE_MARKER = String(process.env.BOT_CHAT_SEND_DONE_MARKER || "0") !== "0";
+const BOT_CHAT_TYPING_ACTION = String(process.env.BOT_CHAT_TYPING_ACTION || "1") !== "0";
+const BOT_CHAT_TYPING_INTERVAL_MS = Number.isFinite(Number(process.env.BOT_CHAT_TYPING_INTERVAL_MS))
+  ? Math.max(1500, Number(process.env.BOT_CHAT_TYPING_INTERVAL_MS))
+  : 3500;
+const BOT_REPLY_BUTTONS_ENABLED = String(process.env.BOT_REPLY_BUTTONS_ENABLED || "1") !== "0";
 const BOT_CHAT_ESSENTIAL_MAX_CHARS = Number.isFinite(Number(process.env.BOT_CHAT_ESSENTIAL_MAX_CHARS))
   ? Math.max(120, Number(process.env.BOT_CHAT_ESSENTIAL_MAX_CHARS))
   : 600;
@@ -139,6 +144,10 @@ const BOT_PERSONALITY_FILE = String(process.env.BOT_PERSONALITY_FILE || "V3_PERS
 const BOT_PERSONALITY_MAX_CHARS = Number.isFinite(Number(process.env.BOT_PERSONALITY_MAX_CHARS))
   ? Math.max(500, Number(process.env.BOT_PERSONALITY_MAX_CHARS))
   : 12000;
+const BOT_PREFERENCE_LEARNING = String(process.env.BOT_PREFERENCE_LEARNING || "1") !== "0";
+const BOT_PREFERENCE_LEARNING_MAX_HINTS = Number.isFinite(Number(process.env.BOT_PREFERENCE_LEARNING_MAX_HINTS))
+  ? Math.max(3, Math.min(60, Number(process.env.BOT_PREFERENCE_LEARNING_MAX_HINTS)))
+  : 20;
 const RESOLVED_CODEX_HOME = (() => {
   const configured = String(process.env.CODEX_HOME || "").trim();
   if (configured) return configured;
@@ -175,6 +184,8 @@ const MAX_EVENT_LOG = 200;
 const REPLY_BUTTON_COOLDOWN_MS = 45000;
 const TELEGRAM_CONFLICT_WINDOW_MS = 60_000;
 const TELEGRAM_CONFLICT_MAX = 5;
+const CHAT_PIPELINE_VERSION = "V0.2(schenni)";
+const CHAT_PIPELINE_RELEASE_LABEL = "chat_pipeline_v0_2_schenni";
 const TELEGRAM_INIT_HEADER = "x-telegram-init-data";
 const MINIAPP_AUTH_MAX_AGE_SECONDS = 24 * 60 * 60;
 const MINIAPP_INPUT_MAX_CHARS = 4000;
@@ -191,6 +202,7 @@ const DEFAULT_SCREEN_TEXT = "(no output yet)";
 const PTY_ENTER = "\r";
 const RECENT_PROJECTS_PATH = path.join(__dirname, "data", "recent-projects.json");
 const USER_PROFILE_PATH = path.join(__dirname, "data", "user-profile.json");
+const USER_PREFERENCE_HINTS_PATH = path.join(__dirname, "data", "user-preference-hints.json");
 const REMINDERS_PATH = path.join(__dirname, "data", "reminders.json");
 const MAX_RECENT_PROJECTS = 12;
 const MAX_REMINDER_TEXT_CHARS = 280;
@@ -1024,6 +1036,125 @@ function upsertUserProfileIntoPersonality(profile) {
   }
 }
 
+function defaultPreferenceHintsState() {
+  return {
+    schemaVersion: 1,
+    hints: [],
+  };
+}
+
+function sanitizePreferenceHint(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const text = String(entry.text || "").replace(/\s+/g, " ").trim().slice(0, 220);
+  if (!text || text.length < 8) return null;
+  const createdAt = String(entry.createdAt || "").trim() || new Date().toISOString();
+  const source = String(entry.source || "chat").trim() || "chat";
+  const count = Number.isFinite(Number(entry.count)) ? Math.max(1, Number(entry.count)) : 1;
+  return {
+    text,
+    source,
+    createdAt,
+    updatedAt: String(entry.updatedAt || createdAt).trim() || createdAt,
+    count,
+  };
+}
+
+function readPreferenceHintsState() {
+  try {
+    if (!fs.existsSync(USER_PREFERENCE_HINTS_PATH)) return defaultPreferenceHintsState();
+    const raw = fs.readFileSync(USER_PREFERENCE_HINTS_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return defaultPreferenceHintsState();
+    const hints = Array.isArray(parsed.hints) ? parsed.hints.map(sanitizePreferenceHint).filter(Boolean) : [];
+    return {
+      schemaVersion: 1,
+      hints: hints.slice(-BOT_PREFERENCE_LEARNING_MAX_HINTS),
+    };
+  } catch (err) {
+    console.warn("Failed to read preference hints:", err.message);
+    return defaultPreferenceHintsState();
+  }
+}
+
+function writePreferenceHintsState(state) {
+  const normalized = {
+    schemaVersion: 1,
+    hints: Array.isArray(state?.hints) ? state.hints.map(sanitizePreferenceHint).filter(Boolean).slice(-BOT_PREFERENCE_LEARNING_MAX_HINTS) : [],
+  };
+  try {
+    ensureParentDir(USER_PREFERENCE_HINTS_PATH);
+    fs.writeFileSync(USER_PREFERENCE_HINTS_PATH, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  } catch (err) {
+    console.warn("Failed to write preference hints:", err.message);
+  }
+  return normalized;
+}
+
+function extractPreferenceLearningHint(text) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized || normalized.length < 8) return "";
+  if (normalized.startsWith("/")) return "";
+  const lower = normalized.toLowerCase();
+
+  const signalPattern =
+    /\b(merk dir|merke dir|künftig|zukünftig|ab jetzt|ich mag|ich möchte|ich will|bevorzuge|nenn mich|nenne mich|du sollst|sprich|dialekt|kurz|knackig|frech|ohne fluff)\b/i;
+  if (!signalPattern.test(lower)) return "";
+
+  return normalized.slice(0, 220);
+}
+
+function buildLearnedPreferenceOverlayText() {
+  if (!BOT_PREFERENCE_LEARNING) return "";
+  const hints = Array.isArray(preferenceHintsState?.hints) ? preferenceHintsState.hints : [];
+  if (!hints.length) return "";
+  const recent = hints.slice(-8);
+  const lines = [
+    "## Learned preferences from recent chats",
+    ...recent.map((hint) => `- ${hint.text}`),
+  ];
+  return lines.join("\n");
+}
+
+function maybeLearnPreferenceFromText(chatId, text, source = "chat") {
+  if (!BOT_PREFERENCE_LEARNING) return false;
+  const hint = extractPreferenceLearningHint(text);
+  if (!hint) return false;
+  const key = hint.toLowerCase();
+  const nowIso = new Date().toISOString();
+  const hints = Array.isArray(preferenceHintsState?.hints) ? [...preferenceHintsState.hints] : [];
+  const idx = hints.findIndex((item) => String(item?.text || "").toLowerCase() === key);
+
+  if (idx >= 0) {
+    hints[idx] = {
+      ...hints[idx],
+      source: String(source || hints[idx].source || "chat"),
+      updatedAt: nowIso,
+      count: Math.max(1, Number(hints[idx].count || 1) + 1),
+    };
+  } else {
+    hints.push({
+      text: hint,
+      source: String(source || "chat"),
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      count: 1,
+    });
+  }
+
+  preferenceHintsState = writePreferenceHintsState({
+    schemaVersion: 1,
+    hints,
+  });
+
+  logRuntimeEvent("preference_learned", {
+    chatId: String(chatId || ""),
+    source: String(source || "chat"),
+    hintPreview: shortInputPreview(hint),
+    hintsCount: preferenceHintsState.hints.length,
+  });
+  return true;
+}
+
 function defaultReminderState() {
   return {
     schemaVersion: 1,
@@ -1272,6 +1403,8 @@ function readPersonalityProfile() {
 }
 
 function buildPersonalityBootstrapPrompt(profile) {
+  const learnedOverlay = buildLearnedPreferenceOverlayText();
+  const profileBody = learnedOverlay ? `${profile.text}\n\n${learnedOverlay}` : profile.text;
   const lines = [
     "Use the following operating profile as the default behavior for this entire session.",
     "Apply it to planning, execution, communication, project management, development, and testing outputs.",
@@ -1280,7 +1413,7 @@ function buildPersonalityBootstrapPrompt(profile) {
     `Profile source: ${profile.path}`,
     "",
     "[PROFILE_START]",
-    profile.text,
+    profileBody,
     "[PROFILE_END]",
   ];
   return lines.join("\n");
@@ -1817,6 +1950,20 @@ async function sendMessage(chatId, text, options = {}) {
   }
 }
 
+async function sendTypingAction(chatId) {
+  if (isSlackChatId(chatId)) return false;
+  try {
+    await bot.sendChatAction(chatId, "typing");
+    return true;
+  } catch (err) {
+    logRuntimeEvent("telegram_typing_failed", {
+      chatId: String(chatId || ""),
+      error: trimErrorMessage(err),
+    });
+    return false;
+  }
+}
+
 function splitTextForTelegram(text, maxChars = TELEGRAM_TEXT_CHUNK_CHARS) {
   const normalized = String(text || "").replace(/\r\n/g, "\n").trim();
   if (!normalized) return [];
@@ -1879,6 +2026,8 @@ function logRuntimeEvent(type, payload = {}) {
     type,
     pid: process.pid,
     state: currentRuntimeState(),
+    pipelineVersion: CHAT_PIPELINE_VERSION,
+    releaseLabel: CHAT_PIPELINE_RELEASE_LABEL,
     ...payload,
   });
 }
@@ -2187,6 +2336,7 @@ let isRestartingBot = false;
 let runtimeWebAppUrl = BOT_WEBAPP_URL;
 let startupTunnelNotice = "";
 let userProfile = readUserProfile();
+let preferenceHintsState = readPreferenceHintsState();
 let onboardingState = null;
 let reminderState = readReminderState();
 let telegramConflictTimestamps = [];
@@ -2396,7 +2546,32 @@ function scheduleReminder(reminder) {
     if (!current || !current.active) return;
 
     const who = profileDisplayName();
-    await sendMessage(current.chatId, `⏰ Erinnerung für ${who}: ${current.message}`);
+    const sent = await sendMessage(current.chatId, `⏰ Erinnerung für ${who}: ${current.message}`);
+    if (!sent) {
+      logRuntimeEvent("reminder_send_failed", {
+        reminderId: String(current.id || ""),
+        reminderType: String(current.type || ""),
+        chatId: String(current.chatId || ""),
+      });
+      if (current.type === "once") {
+        const retryAt = Date.now() + 60_000;
+        reminderState.reminders[idx] = {
+          ...current,
+          runAt: retryAt,
+          lastErrorAt: new Date().toISOString(),
+        };
+        persistReminders();
+        scheduleReminder(reminderState.reminders[idx]);
+        return;
+      }
+      reminderState.reminders[idx] = {
+        ...current,
+        lastErrorAt: new Date().toISOString(),
+      };
+      persistReminders();
+      scheduleReminder(reminderState.reminders[idx]);
+      return;
+    }
     recordActivity(
       "reminder_triggered",
       "Erinnerung ausgeloest",
@@ -2428,11 +2603,7 @@ function scheduleReminder(reminder) {
 function scheduleAllReminders() {
   for (const reminder of reminderState.reminders) {
     if (!reminder.active) continue;
-    if (reminder.type === "once" && Number(reminder.runAt || 0) <= Date.now()) {
-      reminder.active = false;
-      reminder.sentAt = reminder.sentAt || new Date().toISOString();
-      continue;
-    }
+    // Catch up overdue one-time reminders after restarts instead of dropping them.
     scheduleReminder(reminder);
   }
   persistReminders();
@@ -2620,6 +2791,7 @@ function isCodexNoiseLine(line, options = {}) {
     /^thinking\s*\.\.\.$/i,
     /^done$/i,
     /^antwort gesendet\.?$/i,
+    /^answer sent\.?$/i,
     /^=+$/,
     /^[-_]{3,}$/,
     /^\[(\s*system\s*\|\s*meta|\s*answer\s*\|\s*(live|done))\]$/i,
@@ -2635,15 +2807,16 @@ function isCodexNoiseLine(line, options = {}) {
     /^\?\s+for shortcuts/i,
     /^tip:\s*/i,
     /^\(teil\s+\d+\/\d+\)\s*$/i,
+    /^searched$/i,
     /^searched\s+/i,
     /^profile source:\s*/i,
     /^use the following operating profile/i,
     /^\[profile_(start|end)\]/i,
-    /^##\s*\d+\./i,
-    /^###\s+/i,
     /^openai codex\s*\(v/i,
     /^model:\s+loading\b/i,
     /^hi\.\s+what do you need\?$/i,
+    /^hi\.?$/i,
+    /^\s*[│╭╮╰╯].*$/,
   ];
 
   if (noisePatterns.some((pattern) => pattern.test(stripped) || pattern.test(normalized))) return true;
@@ -2652,17 +2825,77 @@ function isCodexNoiseLine(line, options = {}) {
   return false;
 }
 
+function splitScreenLines(text) {
+  return String(text || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/\s+$/g, ""));
+}
+
+function findScreenLineOverlap(beforeLines, afterLines) {
+  const max = Math.min(beforeLines.length, afterLines.length);
+  for (let overlap = max; overlap >= 1; overlap -= 1) {
+    let allEqual = true;
+    for (let i = 0; i < overlap; i += 1) {
+      if (beforeLines[beforeLines.length - overlap + i] !== afterLines[i]) {
+        allEqual = false;
+        break;
+      }
+    }
+    if (allEqual) return overlap;
+  }
+  return 0;
+}
+
+function computeTurnDeltaScreen(run) {
+  const beforeText = String(run?.turnBaselineScreen || "");
+  const afterText = String(run?.screenTextFull || run?.screenText || "");
+  if (!afterText.trim()) return "";
+
+  const beforeLines = splitScreenLines(beforeText);
+  const afterLines = splitScreenLines(afterText);
+  if (!beforeLines.length) return afterLines.join("\n").trim();
+
+  const overlap = findScreenLineOverlap(beforeLines, afterLines);
+  let deltaLines = afterLines.slice(overlap);
+
+  if (!deltaLines.length) {
+    let prefix = 0;
+    const prefixMax = Math.min(beforeLines.length, afterLines.length);
+    while (prefix < prefixMax && beforeLines[prefix] === afterLines[prefix]) {
+      prefix += 1;
+    }
+    deltaLines = afterLines.slice(prefix);
+  }
+
+  return deltaLines.join("\n").trim();
+}
+
 function buildTurnResultTwoLiner(run) {
-  const raw = String(run?.screenTextFull || run?.screenText || "");
+  const raw = computeTurnDeltaScreen(run) || String(run?.screenTextFull || run?.screenText || "");
   const assistantBlock = extractCodexAssistantBlock(raw, run);
   if (assistantBlock) {
     return assistantBlock;
   }
 
-  const cleaned = raw
-    .split("\n")
-    .map((line) => normalizeCapturedLine(line))
-    .filter((line) => !isCodexNoiseLine(line, { lowerPreview: run?.lastInputPreview, sessionName: run?.sessionName }));
+  const cleaned = [];
+  let dropNextSearchUrl = false;
+  for (const rawLine of raw.split("\n")) {
+    const line = normalizeCapturedLine(rawLine);
+    if (!line) continue;
+    if (/^searched$/i.test(line)) {
+      dropNextSearchUrl = true;
+      continue;
+    }
+    if (dropNextSearchUrl && /^https?:\/\/\S+$/i.test(line)) {
+      dropNextSearchUrl = false;
+      continue;
+    }
+    if (isCodexNoiseLine(line, { lowerPreview: run?.lastInputPreview, sessionName: run?.sessionName })) continue;
+    cleaned.push(line);
+    dropNextSearchUrl = false;
+  }
 
   const deduped = [];
   for (const line of cleaned) {
@@ -2849,15 +3082,50 @@ function beginNewTurn(run, reason) {
   run.turnHadAnyChange = false;
   run.responseMessageId = null;
   run.lastResponseText = "";
+  run.turnBaselineScreen = String(run.screenTextFull || run.screenText || "");
   pushRunEvent(run, `turn ${run.turnIndex} started (${reason})`);
+}
+
+function stopTypingTicker(run) {
+  if (run?.typingTimer) clearInterval(run.typingTimer);
+  if (run) {
+    run.typingTimer = null;
+    run.lastTypingAt = 0;
+  }
+}
+
+function startTypingTicker(run) {
+  if (!BOT_CHAT_TYPING_ACTION) return;
+  if (!isActiveCodexRun(run)) return;
+  if (!run.awaitingTurnCompletion) return;
+  if (isSlackChatId(run.chatId)) return;
+  if (run.typingTimer) return;
+
+  const tick = () => {
+    if (!isActiveCodexRun(run) || !run.awaitingTurnCompletion) {
+      stopTypingTicker(run);
+      return;
+    }
+    if (Date.now() - run.lastTypingAt < BOT_CHAT_TYPING_INTERVAL_MS - 250) return;
+    run.lastTypingAt = Date.now();
+    void sendTypingAction(run.chatId);
+  };
+
+  tick();
+  run.typingTimer = setInterval(tick, BOT_CHAT_TYPING_INTERVAL_MS);
 }
 
 async function notifyTurnThinking(run) {
   if (!isActiveCodexRun(run)) return;
-  if (!BOT_CHAT_SEND_THINKING_MARKER) return;
-  if (run.lastThinkingTurn === run.turnIndex) return;
+  if (run.lastThinkingTurn === run.turnIndex) {
+    startTypingTicker(run);
+    return;
+  }
   run.lastThinkingTurn = run.turnIndex;
-  await sendMessage(run.chatId, "thinking ...");
+  startTypingTicker(run);
+  if (!BOT_CHAT_TYPING_ACTION && BOT_CHAT_SEND_THINKING_MARKER) {
+    await sendMessage(run.chatId, "thinking ...");
+  }
 }
 
 function currentReplyPromptSignature(run) {
@@ -2876,9 +3144,10 @@ function suppressCurrentReplyPrompt(run, reason) {
 
 function codexRuntimeCommandMessage(run) {
   const lines = [
-    `Codex started (${run.sessionName}).`,
+    `Codex started (${run.sessionName}) [${CHAT_PIPELINE_VERSION}].`,
     "Quick controls:",
     "- text or /ask <text> -> send input",
+    "- /sh <command> or !<command> -> run shell (Smart-Mix)",
     "- /enter | /raw <text>",
     "- /status | /stopcodex | /panel",
     "- /help for full command list",
@@ -3187,6 +3456,123 @@ function isCodexCommand(text) {
   return first.endsWith("/codex");
 }
 
+const SHELL_HINT_COMMANDS = new Set([
+  "ls",
+  "pwd",
+  "cd",
+  "cat",
+  "grep",
+  "rg",
+  "git",
+  "npm",
+  "node",
+  "python",
+  "python3",
+  "docker",
+  "tmux",
+  "ps",
+  "kill",
+  "top",
+  "tail",
+  "head",
+  "sed",
+  "awk",
+  "curl",
+  "wget",
+  "chmod",
+  "chown",
+  "mkdir",
+  "rm",
+  "mv",
+  "cp",
+  "touch",
+  "echo",
+  "find",
+  "which",
+  "whoami",
+  "date",
+  "uname",
+  "ssh",
+  "scp",
+  "rsync",
+  "kubectl",
+  "helm",
+  "make",
+  "pnpm",
+  "yarn",
+  "bun",
+]);
+
+function looksLikeShellInput(text) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  if (/^(?:\.{1,2}\/|~\/|\/)/.test(value)) return true;
+  if (/(^|\s)(\|\||&&|\||;|>>?|<<?|2>>?|2>)(\s|$)/.test(value)) return true;
+  if (/^[a-zA-Z0-9_.-]+\s+--?[a-zA-Z0-9][\w-]*/.test(value)) return true;
+  const first = value.split(/\s+/)[0].toLowerCase();
+  if (SHELL_HINT_COMMANDS.has(first)) return true;
+  return false;
+}
+
+function classifyInputIntent(text) {
+  const raw = String(text || "");
+  const normalized = raw.trim();
+  if (!normalized) return { type: "empty" };
+
+  const shellMatch = /^\/sh(?:\s+([\s\S]+))?$/i.exec(normalized);
+  if (shellMatch) {
+    const command = String(shellMatch[1] || "").trim();
+    if (!command) return { type: "shell_usage_error" };
+    return { type: "shell", command, explicit: true };
+  }
+
+  const bangMatch = /^!\s*([\s\S]+)$/.exec(normalized);
+  if (bangMatch) {
+    const command = String(bangMatch[1] || "").trim();
+    if (!command) return { type: "shell_usage_error" };
+    return { type: "shell", command, explicit: true };
+  }
+
+  if (normalized.startsWith("/")) return { type: "command" };
+  if (looksLikeShellInput(normalized)) {
+    return { type: "shell", command: raw, explicit: false };
+  }
+  return { type: "codex", prompt: raw };
+}
+
+async function ensureCodexSessionForPrompt(chatId, prompt) {
+  const payload = String(prompt || "").trim();
+  if (!payload) return false;
+
+  if (activeRun && activeRun.mode === "shell_command") {
+    await sendMessage(chatId, "A shell command is running. Use /stopcodex first.");
+    return false;
+  }
+
+  if (activeRun && activeRun.mode === "codex_tmux" && !activeRun.done) {
+    await sendCodexInputLine(activeRun, payload);
+    return true;
+  }
+
+  if (BOT_CODEX_BACKEND !== "tmux") {
+    await sendMessage(chatId, "Direct Codex input is only available with BOT_CODEX_BACKEND=tmux.");
+    return false;
+  }
+
+  if (!tmuxAvailable) {
+    await sendMessage(chatId, "tmux backend is unavailable. Please check tmux installation/config.");
+    return false;
+  }
+
+  await startCodexTmuxRun(chatId, "codex");
+  if (activeRun && activeRun.mode === "codex_tmux" && !activeRun.done) {
+    await sendCodexInputLine(activeRun, payload);
+    return true;
+  }
+  await sendMessage(chatId, "Could not start codex session.");
+  return false;
+}
+
 function buildCodexResponseMessage(run, isFinal = false) {
   if (!isFinal && codexTurnState(run) === "thinking ...") {
     return "thinking ...";
@@ -3288,9 +3674,11 @@ async function upsertCodexMessage(run, nextText, messageIdKey, lastTextKey, labe
 
 async function upsertCodexStatus(run, isFinal = false) {
   updateMiniSnapshot(run);
-  if (!BOT_CHAT_CODEX_FEEDBACK) return;
-  const responseText = buildCodexResponseMessage(run, isFinal);
-  await upsertCodexMessage(run, responseText, "responseMessageId", "lastResponseText", "response");
+  const sendStatusMessage = BOT_CHAT_CODEX_FEEDBACK && !BOT_CHAT_TYPING_ACTION;
+  if (sendStatusMessage) {
+    const responseText = buildCodexResponseMessage(run, isFinal);
+    await upsertCodexMessage(run, responseText, "responseMessageId", "lastResponseText", "response");
+  }
   if (BOT_CHAT_INCLUDE_SYSTEM_META) {
     const systemText = buildCodexSystemMessage(run, isFinal);
     await upsertCodexMessage(run, systemText, "systemMessageId", "lastSystemText", "system");
@@ -3300,6 +3688,7 @@ async function upsertCodexStatus(run, isFinal = false) {
 function clearCodexTimers(run) {
   if (run.timeoutTimer) clearTimeout(run.timeoutTimer);
   if (run.captureTimer) clearInterval(run.captureTimer);
+  stopTypingTicker(run);
   run.timeoutTimer = null;
   run.captureTimer = null;
 }
@@ -3313,6 +3702,7 @@ async function finalizeCodexRun(run, reason) {
   run.done = true;
   run.awaitingTurnCompletion = false;
   run.turnDoneNotified = true;
+  stopTypingTicker(run);
   clearCodexTimers(run);
   updateMiniSnapshot(run);
 
@@ -3359,6 +3749,7 @@ async function maybeNotifyTurnDone(run) {
 
   run.awaitingTurnCompletion = false;
   run.turnDoneNotified = true;
+  stopTypingTicker(run);
   pushRunEvent(run, `turn ${run.turnIndex} considered done after ${idleMs}ms idle`);
   await sendLongText(run.chatId, buildTurnResultTwoLiner(run));
   if (BOT_CHAT_SEND_DONE_MARKER) {
@@ -3370,6 +3761,7 @@ async function maybeNotifyTurnDone(run) {
 async function maybeNotifyReplyButtons(run) {
   if (!isActiveCodexRun(run)) return;
   if (run.awaitingTurnCompletion || run.done) return;
+  if (!BOT_REPLY_BUTTONS_ENABLED) return;
 
   const replyPrompt = extractReplyPrompt(run.screenTextFull || run.screenText || "");
   if (!replyPrompt) return;
@@ -3389,6 +3781,11 @@ async function maybeNotifyReplyButtons(run) {
   run.lastReplyPrompt = signature;
   run.lastReplyButtonsAt = Date.now();
   pushRunEvent(run, "reply prompt detected");
+  logRuntimeEvent("reply_prompt_sent", {
+    chatId: String(run.chatId || ""),
+    turn: run.turnIndex,
+    promptPreview: shortInputPreview(replyPrompt),
+  });
 
   const keyboard = [
     [
@@ -3628,6 +4025,7 @@ async function requestCancelCodexRun(run, reason) {
   if (run.cancelRequested) return;
   run.cancelRequested = true;
   run.cancelReason = reason;
+  stopTypingTicker(run);
   pushRunEvent(run, `cancel requested (${reason})`);
   await upsertCodexStatus(run, false);
 
@@ -3709,6 +4107,7 @@ async function startCodexTmuxRun(chatId, command, options = {}) {
     turnStartedAt: 0,
     turnLastChangeAt: 0,
     turnHadAnyChange: false,
+    turnBaselineScreen: "(starting codex...)",
     lastThinkingTurn: 0,
     lastReplyPrompt: "",
     lastReplyButtonsAt: 0,
@@ -3723,6 +4122,8 @@ async function startCodexTmuxRun(chatId, command, options = {}) {
     cancelReason: null,
     timeoutTimer: null,
     captureTimer: null,
+    typingTimer: null,
+    lastTypingAt: 0,
     done: false,
   };
 
@@ -3760,12 +4161,14 @@ function startMessage() {
     "",
     "Schnellstart:",
     "- /codexstart oder /ask <text>",
+    "- /sh <command> oder !<command> fuer Shell",
     "- /panel, /projects, /status",
     "- /stopcodex (oder /cancel)",
     "- /timer, /remind, /daily, /reminders",
     "- /voice",
     "",
     "Mehr Details: /help",
+    `Chat-Pipeline: ${CHAT_PIPELINE_VERSION}`,
     `CWD: ${lastKnownCwd}`,
     `Codex backend: ${BOT_CODEX_BACKEND}`,
     `Voice: ${buildVoiceReadiness().reason}`,
@@ -3785,6 +4188,7 @@ function helpMessage() {
     "- /setupassistant",
     "- /codexstart",
     "- /ask <text>",
+    "- /sh <command> (Shell, Smart-Mix)",
     "- /panel, /panelstatus",
     "- /projects",
     "- /voice",
@@ -4098,6 +4502,7 @@ async function handleMiniAppInput(rawText) {
       finishCommandTrace(trace, "command_completed", { action: "reminder" });
       return { ok: true, action: "reminder" };
     }
+    maybeLearnPreferenceFromText(chatId, text, "miniapp");
 
     if (activeRun && activeRun.mode === "shell_command") {
       finishCommandTrace(trace, "command_failed", { reason: "shell_busy" });
@@ -4125,6 +4530,11 @@ async function handleMiniAppInput(rawText) {
         return { ok: true, action: "raw" };
       }
 
+      if (/^\/sh\b/i.test(normalized)) {
+        finishCommandTrace(trace, "command_failed", { reason: "shell_while_codex_running" });
+        return { ok: false, error: "shell_while_codex_running" };
+      }
+
       if (normalized.startsWith("/")) {
         finishCommandTrace(trace, "command_failed", { reason: "unknown_runtime_command" });
         return { ok: false, error: "unknown_runtime_command" };
@@ -4149,6 +4559,25 @@ async function handleMiniAppInput(rawText) {
       await startCodexTmuxRun(chatId, normalized);
       finishCommandTrace(trace, "command_completed", { action: "start_codex_cmd" });
       return { ok: true, action: "start_codex_cmd" };
+    }
+
+    const intent = classifyInputIntent(text);
+    if (intent.type === "shell_usage_error") {
+      finishCommandTrace(trace, "command_failed", { reason: "shell_usage_error" });
+      return { ok: false, error: "shell_usage_error", hint: "Usage: /sh <command>" };
+    }
+
+    if (intent.type === "shell") {
+      await startShellCommand(chatId, intent.command);
+      finishCommandTrace(trace, "command_completed", { action: "start_shell_cmd" });
+      return { ok: true, action: "start_shell_cmd" };
+    }
+
+    if (intent.type === "codex") {
+      const sent = await ensureCodexSessionForPrompt(chatId, intent.prompt);
+      finishCommandTrace(trace, "command_completed", { action: sent ? "codex_input" : "codex_input_failed" });
+      if (!sent) return { ok: false, error: "codex_input_failed" };
+      return { ok: true, action: "codex_input" };
     }
 
     finishCommandTrace(trace, "command_failed", { reason: "no_active_codex" });
@@ -4603,6 +5032,7 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
   if (await maybeHandleReminderCommands(chatId, text)) {
     return;
   }
+  maybeLearnPreferenceFromText(chatId, text, "slack");
 
   if (normalized === "/start" || lowered === "start") {
     await sendMessage(chatId, startMessage());
@@ -4679,33 +5109,7 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
       await sendMessage(chatId, "Usage: /ask <text>");
       return;
     }
-
-    if (activeRun && activeRun.mode === "shell_command") {
-      await sendMessage(chatId, "A shell command is running. Use /stopcodex first.");
-      return;
-    }
-
-    if (activeRun && activeRun.mode === "codex_tmux" && !activeRun.done) {
-      await sendCodexInputLine(activeRun, payload);
-      return;
-    }
-
-    if (BOT_CODEX_BACKEND !== "tmux") {
-      await sendMessage(chatId, "Direct Codex input is only available with BOT_CODEX_BACKEND=tmux.");
-      return;
-    }
-
-    if (!tmuxAvailable) {
-      await sendMessage(chatId, "tmux backend is unavailable. Please check tmux installation/config.");
-      return;
-    }
-
-    await startCodexTmuxRun(chatId, "codex");
-    if (activeRun && activeRun.mode === "codex_tmux" && !activeRun.done) {
-      await sendCodexInputLine(activeRun, payload);
-      return;
-    }
-    await sendMessage(chatId, "Could not start codex session for /ask.");
+    await ensureCodexSessionForPrompt(chatId, payload);
     return;
   }
 
@@ -4737,6 +5141,11 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
     if (text.startsWith("/raw ")) {
       const payload = text.slice(5);
       await sendCodexRaw(run, payload);
+      return;
+    }
+
+    if (/^\/sh\b/i.test(normalized)) {
+      await sendMessage(chatId, "Shell commands via /sh are only available when no codex session is running. Use /stopcodex first.");
       return;
     }
 
@@ -4786,18 +5195,33 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
   }
 
   if (!normalized) return;
-
-  if (normalized.startsWith("/")) {
-    await sendMessage(chatId, "Unknown command. Use /help.");
-    return;
-  }
-
   if (BOT_CODEX_BACKEND === "tmux" && isCodexCommand(normalized)) {
     await startCodexTmuxRun(chatId, normalized);
     return;
   }
 
-    await startShellCommand(chatId, text);
+  const intent = classifyInputIntent(text);
+  if (intent.type === "shell_usage_error") {
+    await sendMessage(chatId, "Usage: /sh <command>");
+    return;
+  }
+
+  if (intent.type === "command") {
+    await sendMessage(chatId, "Unknown command. Use /help.");
+    return;
+  }
+
+  if (intent.type === "shell") {
+    await startShellCommand(chatId, intent.command);
+    return;
+  }
+
+  if (intent.type === "codex") {
+    await ensureCodexSessionForPrompt(chatId, intent.prompt);
+    return;
+  }
+
+  await startShellCommand(chatId, text);
   } catch (err) {
     finishCommandTrace(trace, "command_failed", { reason: "exception", error: trimErrorMessage(err) });
     await sendMessage(chatId, `Command failed (${trace.id}): ${trimErrorMessage(err)}`);
@@ -4901,10 +5325,10 @@ async function bootstrapRuntime() {
     console.log(startupTunnelNotice);
   }
   await cleanupStaleTmuxSessions();
+  await bootstrapSlackBridge();
   scheduleAllReminders();
   await configureMiniAppMenuButton();
   await configureTelegramCommands();
-  await bootstrapSlackBridge();
   writeRestartReadyMarker({ phase: "ready" });
   writeRuntimeStateSnapshot({ phase: "ready" });
   logRuntimeEvent("runtime_ready", {
@@ -5016,12 +5440,22 @@ bot.on("callback_query", async (query) => {
   if (data.startsWith("reply:")) {
     await answerCallback(query);
     if (!activeRun || activeRun.mode !== "codex_tmux" || activeRun.done) {
+      logRuntimeEvent("reply_button_failed", {
+        chatId: String(chatId || ""),
+        action: data.slice("reply:".length),
+        reason: "no_active_session",
+      });
       await sendMessage(chatId, "No active codex session for reply buttons.");
       return;
     }
 
     const action = data.slice("reply:".length);
     const run = activeRun;
+    logRuntimeEvent("reply_button_clicked", {
+      chatId: String(chatId || ""),
+      action,
+      turn: run.turnIndex,
+    });
     if (action === "cancel") {
       await sendMessage(chatId, "Stop requested for codex session...");
       await requestCancelCodexRun(run, "cancel");
@@ -5110,6 +5544,7 @@ bot.on("message", async (msg) => {
   if (await maybeHandleReminderCommands(chatId, text)) {
     return;
   }
+  maybeLearnPreferenceFromText(chatId, text, "telegram");
 
   if (normalized === "/start" || normalized.startsWith("/start@")) {
     await sendMessage(chatId, startMessage());
@@ -5176,33 +5611,7 @@ bot.on("message", async (msg) => {
       await sendMessage(chatId, "Usage: /ask <text>");
       return;
     }
-
-    if (activeRun && activeRun.mode === "shell_command") {
-      await sendMessage(chatId, "A shell command is running. Use /stopcodex first.");
-      return;
-    }
-
-    if (activeRun && activeRun.mode === "codex_tmux" && !activeRun.done) {
-      await sendCodexInputLine(activeRun, payload);
-      return;
-    }
-
-    if (BOT_CODEX_BACKEND !== "tmux") {
-      await sendMessage(chatId, "Direct Codex input is only available with BOT_CODEX_BACKEND=tmux.");
-      return;
-    }
-
-    if (!tmuxAvailable) {
-      await sendMessage(chatId, "tmux backend is unavailable. Please check tmux installation/config.");
-      return;
-    }
-
-    await startCodexTmuxRun(chatId, "codex");
-    if (activeRun && activeRun.mode === "codex_tmux" && !activeRun.done) {
-      await sendCodexInputLine(activeRun, payload);
-      return;
-    }
-    await sendMessage(chatId, "Could not start codex session for /ask.");
+    await ensureCodexSessionForPrompt(chatId, payload);
     return;
   }
 
@@ -5234,6 +5643,11 @@ bot.on("message", async (msg) => {
     if (text.startsWith("/raw ")) {
       const payload = text.slice(5);
       await sendCodexRaw(run, payload);
+      return;
+    }
+
+    if (/^\/sh\b/i.test(normalized)) {
+      await sendMessage(chatId, "Shell commands via /sh are only available when no codex session is running. Use /stopcodex first.");
       return;
     }
 
@@ -5288,18 +5702,33 @@ bot.on("message", async (msg) => {
   }
 
   if (!normalized) return;
-
-  if (normalized.startsWith("/")) {
-    await sendMessage(chatId, "Unknown command. Use /help.");
-    return;
-  }
-
   if (BOT_CODEX_BACKEND === "tmux" && isCodexCommand(normalized)) {
     await startCodexTmuxRun(chatId, normalized);
     return;
   }
 
-    await startShellCommand(chatId, text);
+  const intent = classifyInputIntent(text);
+  if (intent.type === "shell_usage_error") {
+    await sendMessage(chatId, "Usage: /sh <command>");
+    return;
+  }
+
+  if (intent.type === "command") {
+    await sendMessage(chatId, "Unknown command. Use /help.");
+    return;
+  }
+
+  if (intent.type === "shell") {
+    await startShellCommand(chatId, intent.command);
+    return;
+  }
+
+  if (intent.type === "codex") {
+    await ensureCodexSessionForPrompt(chatId, intent.prompt);
+    return;
+  }
+
+  await startShellCommand(chatId, text);
   } catch (err) {
     finishCommandTrace(trace, "command_failed", { reason: "exception", error: trimErrorMessage(err) });
     await sendMessage(chatId, `Command failed (${trace.id}): ${trimErrorMessage(err)}`);

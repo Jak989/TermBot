@@ -38,6 +38,7 @@ Mit `/setupassistant` konfigurierst du:
 
 TermBot speichert das lokal in `data/user-profile.json` und synchronisiert den Profilblock in `V3_PERSONALITY.md`.
 Bei neuen Codex-Sessions wird dieses Profil automatisch als Verhalten geladen (konfigurierbar ueber `BOT_PERSONALITY_AUTO_APPLY`).
+Optional lernt TermBot zusaetzliche Praeferenz-Hinweise aus deinem Chat mit (`BOT_PREFERENCE_LEARNING=1`) und nutzt sie in neuen Sessions.
 
 ## Feature Matrix
 
@@ -59,6 +60,7 @@ Bei neuen Codex-Sessions wird dieses Profil automatisch als Verhalten geladen (k
 - `/setupassistant` Assistant-Profil einrichten
 - `/codexstart` Codex-Session starten
 - `/ask <text>` Prompt direkt an Codex
+- `/sh <command>` Shell-Command explizit ausfuehren (Smart-Mix)
 - `/projects` letzte Projekte/Sessions
 - `/panel` Mini-App Button senden
 - `/panelstatus` Mini-App/Tunnel/API Status
@@ -82,6 +84,7 @@ Mindestens setzen in `.env`:
 Empfohlen fuer vollen Assistant-Betrieb:
 
 - `BOT_CODEX_BACKEND=tmux`
+- `BOT_CHAT_TYPING_ACTION=1` (Telegram zeigt "schreibt...")
 - `BOT_AUTO_START_CODEX=1`
 - `BOT_PROMPT_ON_START=1`
 - `BOT_SINGLE_INSTANCE=1`
