@@ -6,7 +6,6 @@ const { spawn, spawnSync } = require("child_process");
 const dotenv = require("dotenv");
 const express = require("express");
 const TelegramBot = require("node-telegram-bot-api");
-const { App: SlackApp, LogLevel } = require("@slack/bolt");
 const pty = require("node-pty");
 const tmux = require("./scripts/lib/tmux-bridge");
 const { validateInitData } = require("./scripts/lib/telegram-webapp-auth");
@@ -65,7 +64,8 @@ function writeRestartContext(filePath, source, chatId, restartId = "") {
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_ALLOWED_USER_ID = String(process.env.TELEGRAM_ALLOWED_USER_ID || "").trim();
-const SLACK_BOT_ENABLED = String(process.env.SLACK_BOT_ENABLED || "0") === "1";
+// V0.2(schenni): Slack runtime path is disabled for now to keep the chat pipeline focused.
+const SLACK_BOT_ENABLED = false;
 const SLACK_BOT_TOKEN = String(process.env.SLACK_BOT_TOKEN || "").trim();
 const SLACK_APP_TOKEN = String(process.env.SLACK_APP_TOKEN || "").trim();
 const SLACK_ALLOWED_USER_ID = String(process.env.SLACK_ALLOWED_USER_ID || "").trim();
@@ -1935,9 +1935,6 @@ async function sendSlackMessage(chatId, text) {
 }
 
 async function sendMessage(chatId, text, options = {}) {
-  if (isSlackChatId(chatId)) {
-    return sendSlackMessage(chatId, text);
-  }
   try {
     return await bot.sendMessage(chatId, text, options);
   } catch (err) {
@@ -1951,7 +1948,6 @@ async function sendMessage(chatId, text, options = {}) {
 }
 
 async function sendTypingAction(chatId) {
-  if (isSlackChatId(chatId)) return false;
   try {
     await bot.sendChatAction(chatId, "typing");
     return true;
@@ -2342,6 +2338,7 @@ let reminderState = readReminderState();
 let telegramConflictTimestamps = [];
 let telegramConflictRecoveryScheduled = false;
 const reminderTimers = new Map();
+const callbackQuerySeen = new Map();
 
 function profileDisplayName() {
   return userProfile.ownerName || "User";
@@ -2778,14 +2775,28 @@ function stripLeadingListMarker(line) {
   return normalizeCapturedLine(line).replace(/^[-*]\s+/, "").trim();
 }
 
-function isCodexNoiseLine(line, options = {}) {
+function normalizeComparableText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/\[pasted content[^\]]*\]/gi, " ")
+    .replace(/[^a-z0-9\u00c0-\u017f\s]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stripPromptPrefix(line) {
+  return String(line || "").replace(/^\s*›\s*/, "").trim();
+}
+
+function isCodexUiNoiseLine(line, options = {}) {
   const normalized = normalizeCapturedLine(line);
   if (!normalized) return true;
   const stripped = stripLeadingListMarker(normalized);
   if (!stripped) return true;
   const lower = stripped.toLowerCase();
-  const lowerPreview = String(options?.lowerPreview || "").trim().toLowerCase();
-  const sessionName = String(options?.sessionName || "").trim();
+  const lowerPreview = normalizeComparableText(options?.lowerPreview || "");
+  const turnPrompt = normalizeComparableText(options?.turnPrompt || "");
+  const sessionName = String(options?.sessionName || "").trim().toLowerCase();
 
   const noisePatterns = [
     /^thinking\s*\.\.\.$/i,
@@ -2806,6 +2817,8 @@ function isCodexNoiseLine(line, options = {}) {
     /^directory:\s*/i,
     /^\?\s+for shortcuts/i,
     /^tip:\s*/i,
+    /^use \/skills\b/i,
+    /^working\s*\(/i,
     /^\(teil\s+\d+\/\d+\)\s*$/i,
     /^searched$/i,
     /^searched\s+/i,
@@ -2817,11 +2830,13 @@ function isCodexNoiseLine(line, options = {}) {
     /^hi\.\s+what do you need\?$/i,
     /^hi\.?$/i,
     /^\s*[│╭╮╰╯].*$/,
+    /^p'? or visit https:\/\/chatgpt\.com\/codex/i,
   ];
 
   if (noisePatterns.some((pattern) => pattern.test(stripped) || pattern.test(normalized))) return true;
-  if (sessionName && stripped.includes(sessionName)) return true;
-  if (lowerPreview && lowerPreview.length >= 6 && lower.includes(lowerPreview)) return true;
+  if (sessionName && lower.includes(sessionName)) return true;
+  if (lowerPreview && lowerPreview.length >= 8 && lower.includes(lowerPreview)) return true;
+  if (turnPrompt && turnPrompt.length >= 10 && lower === turnPrompt) return true;
   return false;
 }
 
@@ -2831,6 +2846,57 @@ function splitScreenLines(text) {
     .replace(/\r/g, "\n")
     .split("\n")
     .map((line) => line.replace(/\s+$/g, ""));
+}
+
+function findPromptAnchorIndex(lines, promptText = "") {
+  const promptNorm = normalizeComparableText(promptText);
+  const needles = [];
+  if (promptNorm) {
+    needles.push(promptNorm);
+    if (promptNorm.length >= 80) needles.push(promptNorm.slice(0, 80));
+    if (promptNorm.length >= 48) needles.push(promptNorm.slice(0, 48));
+    if (promptNorm.length >= 24) needles.push(promptNorm.slice(0, 24));
+  }
+  const uniqueNeedles = [...new Set(needles.filter((entry) => entry.length >= 16))];
+
+  if (uniqueNeedles.length) {
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const lineNorm = normalizeComparableText(stripPromptPrefix(lines[i] || ""));
+      if (!lineNorm) continue;
+      if (uniqueNeedles.some((needle) => lineNorm.includes(needle) || needle.includes(lineNorm))) {
+        return i;
+      }
+    }
+  }
+
+  let fallback = -1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const raw = String(lines[i] || "");
+    if (!/^\s*›\s/.test(raw)) continue;
+    const body = stripPromptPrefix(raw);
+    if (!body || /^use \/skills\b/i.test(body)) continue;
+    if (fallback < 0) fallback = i;
+    if (!uniqueNeedles.length) continue;
+    const bodyNorm = normalizeComparableText(body);
+    if (!bodyNorm) continue;
+    if (uniqueNeedles.some((needle) => bodyNorm.includes(needle) || needle.includes(bodyNorm))) {
+      return i;
+    }
+  }
+
+  if (uniqueNeedles.length) {
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const lineNorm = normalizeComparableText(lines[i] || "");
+      if (!lineNorm) continue;
+      if (!uniqueNeedles.some((needle) => lineNorm.includes(needle))) continue;
+      for (let j = i; j >= 0; j -= 1) {
+        if (/^\s*›\s/.test(String(lines[j] || ""))) return j;
+      }
+      break;
+    }
+  }
+
+  return fallback;
 }
 
 function findScreenLineOverlap(beforeLines, afterLines) {
@@ -2872,105 +2938,102 @@ function computeTurnDeltaScreen(run) {
   return deltaLines.join("\n").trim();
 }
 
-function buildTurnResultTwoLiner(run) {
-  const raw = computeTurnDeltaScreen(run) || String(run?.screenTextFull || run?.screenText || "");
-  const assistantBlock = extractCodexAssistantBlock(raw, run);
-  if (assistantBlock) {
-    return assistantBlock;
+function extractTurnSegmentFromPrompt(run) {
+  const lines = splitScreenLines(run?.screenTextFull || run?.screenText || "");
+  if (!lines.length) return [];
+  const anchorIndex = findPromptAnchorIndex(lines, run?.currentTurnPromptText || "");
+  if (anchorIndex < 0) return [];
+  let endIndex = lines.length;
+  for (let i = anchorIndex + 1; i < lines.length; i += 1) {
+    if (/^\s*›\s/.test(String(lines[i] || ""))) {
+      endIndex = i;
+      break;
+    }
   }
+  return lines.slice(anchorIndex + 1, endIndex);
+}
 
-  const cleaned = [];
+function hasTurnOutputCandidate(run) {
+  if (run?.currentTurnSuppressOutput) return true;
+  const primary = cleanTurnOutputLines(extractTurnSegmentFromPrompt(run), run);
+  if (primary.length) return true;
+  const deltaLines = splitScreenLines(computeTurnDeltaScreen(run));
+  const delta = cleanTurnOutputLines(deltaLines, run);
+  return delta.length > 0;
+}
+
+function cleanTurnOutputLines(lines, run) {
+  const output = [];
   let dropNextSearchUrl = false;
-  for (const rawLine of raw.split("\n")) {
-    const line = normalizeCapturedLine(rawLine);
-    if (!line) continue;
-    if (/^searched$/i.test(line)) {
+  const promptComparable = normalizeComparableText(run?.currentTurnPromptText || "");
+  const seen = new Set();
+
+  for (const rawLine of lines) {
+    const line = String(rawLine || "").replace(/\s+$/g, "");
+    const normalized = normalizeCapturedLine(line);
+    if (!normalized) {
+      if (output.length && output[output.length - 1] !== "") output.push("");
+      continue;
+    }
+    if (/^searched$/i.test(normalized)) {
       dropNextSearchUrl = true;
       continue;
     }
-    if (dropNextSearchUrl && /^https?:\/\/\S+$/i.test(line)) {
+    if (dropNextSearchUrl && /^https?:\/\/\S+$/i.test(normalized)) {
       dropNextSearchUrl = false;
       continue;
     }
-    if (isCodexNoiseLine(line, { lowerPreview: run?.lastInputPreview, sessionName: run?.sessionName })) continue;
-    cleaned.push(line);
     dropNextSearchUrl = false;
-  }
+    if (
+      isCodexUiNoiseLine(normalized, {
+        lowerPreview: run?.lastInputPreview || "",
+        sessionName: run?.sessionName || "",
+        turnPrompt: run?.currentTurnPromptText || "",
+      })
+    ) {
+      continue;
+    }
+    if (promptComparable && normalizeComparableText(normalized) === promptComparable) continue;
 
-  const deduped = [];
-  for (const line of cleaned) {
-    if (!deduped.length || deduped[deduped.length - 1] !== line) {
-      deduped.push(line);
+    const lineKey = normalizeComparableText(normalized);
+    if (!lineKey) continue;
+    if (output.length && output[output.length - 1] === normalized) continue;
+    if (seen.has(`recent:${lineKey}`) && output.length && output[output.length - 1] !== "") continue;
+
+    output.push(normalized);
+    seen.add(`recent:${lineKey}`);
+    if (seen.size > 120) {
+      const first = seen.values().next().value;
+      seen.delete(first);
     }
   }
 
-  if (!deduped.length) {
-    return "Kein klarer Ergebnis-Text erkannt.";
-  }
+  while (output.length && !output[0]) output.shift();
+  while (output.length && !output[output.length - 1]) output.pop();
+  if (!output.length) return [];
 
-  return deduped.map((line) => stripLeadingListMarker(line)).join("\n");
+  const bulletLikeLines = output.filter((line) => line && /^[-*]\s+/.test(line));
+  if (bulletLikeLines.length >= Math.ceil(output.filter(Boolean).length * 0.7)) {
+    return output.map((line) => (line ? stripLeadingListMarker(line) : line));
+  }
+  return output;
 }
 
-function extractCodexAssistantBlock(screenText, run) {
-  const lines = String(screenText || "").split("\n");
-  if (!lines.length) return "";
+function buildTurnResultTwoLiner(run) {
+  const primaryLines = extractTurnSegmentFromPrompt(run);
+  const primary = cleanTurnOutputLines(primaryLines, run);
+  if (primary.length) return primary.join("\n");
 
-  const segments = [];
-  let current = null;
+  const deltaLines = splitScreenLines(computeTurnDeltaScreen(run));
+  const delta = cleanTurnOutputLines(deltaLines, run);
+  if (delta.length) return delta.join("\n");
 
-  const flush = () => {
-    if (!current || !current.length) return;
-    const joined = current.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-    if (joined) segments.push(joined);
-    current = null;
-  };
+  const tailLines = splitScreenLines(run?.screenTextFull || run?.screenText || "").slice(-80);
+  const tail = cleanTurnOutputLines(tailLines, run);
+  if (tail.length) return tail.join("\n");
 
-  const shouldStop = (line) => {
-    const normalized = normalizeCapturedLine(line);
-    if (!normalized) return false;
-    if (/^\s*›\s/.test(normalized)) return true;
-    if (/^\s*gpt-\d+/i.test(normalized)) return true;
-    if (/^\s*Tip:/i.test(normalized)) return true;
-    if (/^\s*model:\s*/i.test(normalized)) return true;
-    if (/^\s*directory:\s*/i.test(normalized)) return true;
-    if (/^\?\s+for shortcuts/i.test(normalized)) return true;
-    if (/^\s*[│╭╰].*/.test(normalized)) return true;
-    return false;
-  };
-
-  for (const line of lines) {
-    if (/^\s*(?:•|●|◦|▪|▫|-)\s+/.test(line)) {
-      flush();
-      const first = line.replace(/^\s*(?:•|●|◦|▪|▫|-)\s+/, "").trimEnd();
-      current = first ? [first] : [];
-      continue;
-    }
-    if (!current) continue;
-
-    if (shouldStop(line)) {
-      flush();
-      break;
-    }
-
-    const normalized = line.replace(/^\s{2,}/, "").trimEnd();
-    if (!normalized.trim()) {
-      if (current.length && current[current.length - 1] !== "") current.push("");
-      continue;
-    }
-    current.push(normalized.trim());
-  }
-  flush();
-
-  for (let i = segments.length - 1; i >= 0; i -= 1) {
-    const segmentLines = segments[i]
-      .split("\n")
-      .map((line) => normalizeCapturedLine(line))
-      .filter((line) => !isCodexNoiseLine(line, { lowerPreview: run?.lastInputPreview, sessionName: run?.sessionName }))
-      .map((line) => stripLeadingListMarker(line));
-    if (!segmentLines.length) continue;
-    const segment = segmentLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-    if (segment.length < 8) continue;
-    return segment;
+  if (!run?.currentTurnSuppressOutput) {
+    return "Kein klarer Ergebnis-Text erkannt.";
   }
   return "";
 }
@@ -3073,17 +3136,24 @@ function pushRunEvent(run, message) {
   updateMiniSnapshot(run);
 }
 
-function beginNewTurn(run, reason) {
+function beginNewTurn(run, reason, options = {}) {
   run.turnIndex += 1;
   run.awaitingTurnCompletion = true;
   run.turnDoneNotified = false;
   run.turnStartedAt = Date.now();
   run.turnLastChangeAt = Date.now();
   run.turnHadAnyChange = false;
+  run.turnSubmitRetried = false;
   run.responseMessageId = null;
   run.lastResponseText = "";
+  run.currentTurnPromptText = String(options.promptText || "").trim();
+  run.currentTurnPromptComparable = normalizeComparableText(run.currentTurnPromptText);
+  run.currentTurnSuppressOutput = Boolean(options.suppressOutput);
   run.turnBaselineScreen = String(run.screenTextFull || run.screenText || "");
-  pushRunEvent(run, `turn ${run.turnIndex} started (${reason})`);
+  pushRunEvent(
+    run,
+    `turn ${run.turnIndex} started (${reason}${run.currentTurnSuppressOutput ? ", output=suppressed" : ""})`
+  );
 }
 
 function stopTypingTicker(run) {
@@ -3123,9 +3193,6 @@ async function notifyTurnThinking(run) {
   }
   run.lastThinkingTurn = run.turnIndex;
   startTypingTicker(run);
-  if (!BOT_CHAT_TYPING_ACTION && BOT_CHAT_SEND_THINKING_MARKER) {
-    await sendMessage(run.chatId, "thinking ...");
-  }
 }
 
 function currentReplyPromptSignature(run) {
@@ -3673,16 +3740,9 @@ async function upsertCodexMessage(run, nextText, messageIdKey, lastTextKey, labe
 }
 
 async function upsertCodexStatus(run, isFinal = false) {
+  void isFinal;
+  // V0.2(schenni): Miniapp snapshot updates stay, chat meta/status messages stay off.
   updateMiniSnapshot(run);
-  const sendStatusMessage = BOT_CHAT_CODEX_FEEDBACK && !BOT_CHAT_TYPING_ACTION;
-  if (sendStatusMessage) {
-    const responseText = buildCodexResponseMessage(run, isFinal);
-    await upsertCodexMessage(run, responseText, "responseMessageId", "lastResponseText", "response");
-  }
-  if (BOT_CHAT_INCLUDE_SYSTEM_META) {
-    const systemText = buildCodexSystemMessage(run, isFinal);
-    await upsertCodexMessage(run, systemText, "systemMessageId", "lastSystemText", "system");
-  }
 }
 
 function clearCodexTimers(run) {
@@ -3746,12 +3806,32 @@ async function maybeNotifyTurnDone(run) {
   const promptVisible = looksLikeCodexPrompt(screen);
   if (!promptVisible && idleMs < BOT_TURN_FORCE_DONE_MS) return;
   if (screenIndicatesCodexWorking(run) && idleMs < BOT_TURN_FORCE_DONE_MS) return;
+  if (!hasTurnOutputCandidate(run)) {
+    if (!run.turnSubmitRetried) {
+      run.turnSubmitRetried = true;
+      pushRunEvent(run, `turn ${run.turnIndex} no output yet -> submit retry`);
+      await submitWithFallback(run, "turn-no-output-retry");
+      return;
+    }
+    if (idleMs < BOT_TURN_FORCE_DONE_MS * 2) return;
+  }
 
   run.awaitingTurnCompletion = false;
   run.turnDoneNotified = true;
   stopTypingTicker(run);
   pushRunEvent(run, `turn ${run.turnIndex} considered done after ${idleMs}ms idle`);
-  await sendLongText(run.chatId, buildTurnResultTwoLiner(run));
+  const turnText = buildTurnResultTwoLiner(run);
+  logRuntimeEvent("turn_output_prepared", {
+    chatId: String(run.chatId || ""),
+    turn: run.turnIndex,
+    suppressed: Boolean(run.currentTurnSuppressOutput),
+    outputPreview: shortInputPreview(turnText || ""),
+  });
+  if (run.currentTurnSuppressOutput) {
+    pushRunEvent(run, `turn ${run.turnIndex} output intentionally suppressed`);
+  } else if (turnText) {
+    await sendLongText(run.chatId, turnText);
+  }
   if (BOT_CHAT_SEND_DONE_MARKER) {
     await sendMessage(run.chatId, "done");
   }
@@ -3765,6 +3845,7 @@ async function maybeNotifyReplyButtons(run) {
 
   const replyPrompt = extractReplyPrompt(run.screenTextFull || run.screenText || "");
   if (!replyPrompt) return;
+  if (Date.now() - run.lastReplyButtonsAt < REPLY_BUTTON_COOLDOWN_MS) return;
 
   const signature = replyPrompt.toLowerCase();
   if (run.replyPromptSuppressed && run.replyPromptSuppressed !== signature) {
@@ -3952,18 +4033,30 @@ async function ensureCodexPromptReady(run, reasonLabel = "input") {
   }
 }
 
-async function sendCodexInputLine(run, text) {
+async function sendCodexInputLine(run, text, options = {}) {
   if (!isActiveCodexRun(run)) return;
-  await ensureCodexPromptReady(run, "line-input");
+  const reasonLabel = String(options.turnReason || "line-input");
+  await ensureCodexPromptReady(run, reasonLabel);
   suppressCurrentReplyPrompt(run, "text-input");
-  await tmux.sendLiteral(BOT_TMUX_BIN, run.sessionName, text);
+  try {
+    await tmux.sendLiteral(BOT_TMUX_BIN, run.sessionName, text);
+  } catch (err) {
+    pushRunEvent(run, `input failed: ${trimErrorMessage(err)}`);
+    if (/can't find pane|no server running|session.*not found/i.test(String(err?.message || ""))) {
+      await finalizeCodexRun(run, "exit");
+    }
+    throw err;
+  }
   run.inputCount += 1;
   run.lastInputPreview = shortInputPreview(text);
-  beginNewTurn(run, "line-input");
+  beginNewTurn(run, reasonLabel, {
+    promptText: text,
+    suppressOutput: Boolean(options.suppressOutput),
+  });
   await notifyTurnThinking(run);
   pushRunEvent(run, `input line sent (${text.length} chars)`);
   await upsertCodexStatus(run, false);
-  await submitWithFallback(run, "line-input");
+  await submitWithFallback(run, reasonLabel);
 }
 
 async function maybeAutoApplyPersonality(run) {
@@ -4006,7 +4099,10 @@ async function maybeAutoApplyPersonality(run) {
   await upsertCodexStatus(run, false);
 
   const prompt = buildPersonalityBootstrapPrompt(profile);
-  await sendCodexInputLine(run, prompt);
+  await sendCodexInputLine(run, prompt, {
+    turnReason: "personality-bootstrap",
+    suppressOutput: true,
+  });
 }
 
 async function sendCodexRaw(run, payload) {
@@ -4107,7 +4203,11 @@ async function startCodexTmuxRun(chatId, command, options = {}) {
     turnStartedAt: 0,
     turnLastChangeAt: 0,
     turnHadAnyChange: false,
+    turnSubmitRetried: false,
     turnBaselineScreen: "(starting codex...)",
+    currentTurnPromptText: "",
+    currentTurnPromptComparable: "",
+    currentTurnSuppressOutput: false,
     lastThinkingTurn: 0,
     lastReplyPrompt: "",
     lastReplyButtonsAt: 0,
@@ -4611,10 +4711,6 @@ async function sendPanelButton(chatId, options = {}) {
       await sendMessage(chatId, `Panel is not ready: ${readiness.reason}`);
     }
     return false;
-  }
-  if (isSlackChatId(chatId)) {
-    await sendMessage(chatId, `${panelTitle}\n${readiness.launchUrl}`);
-    return true;
   }
   await sendMessage(chatId, panelTitle, {
     reply_markup: {
@@ -5240,44 +5336,8 @@ function slackReadyConfig() {
 }
 
 async function bootstrapSlackBridge() {
-  if (!slackEnabled()) {
-    console.log("Slack bot: disabled (set SLACK_BOT_ENABLED=1).");
-    return false;
-  }
-
-  if (!slackReadyConfig()) {
-    console.warn("Slack bot: enabled but SLACK_BOT_TOKEN or SLACK_APP_TOKEN is missing.");
-    return false;
-  }
-
-  try {
-    slackApp = new SlackApp({
-      token: SLACK_BOT_TOKEN,
-      appToken: SLACK_APP_TOKEN,
-      socketMode: true,
-      logLevel: LogLevel.INFO,
-    });
-
-    slackApp.event("message", async ({ event }) => {
-      if (!event) return;
-      if (event.subtype) return;
-      if (!event.user || !event.channel) return;
-      if (typeof event.text !== "string") return;
-      await handleSlackIncomingText(event.channel, event.user, event.text);
-    });
-
-    await slackApp.start();
-    console.log("Slack bot started (socket mode).");
-
-    if (SLACK_STARTUP_CHANNEL_ID) {
-      await sendMessage(makeSlackChatId(SLACK_STARTUP_CHANNEL_ID), "Bot started on your Mac (Slack).");
-    }
-    return true;
-  } catch (err) {
-    console.error("Slack bot failed to start:", err.message);
-    slackApp = null;
-    return false;
-  }
+  console.log("Slack bridge: disabled in V0.2(schenni).");
+  return false;
 }
 
 async function cleanupStaleTmuxSessions() {
@@ -5325,7 +5385,6 @@ async function bootstrapRuntime() {
     console.log(startupTunnelNotice);
   }
   await cleanupStaleTmuxSessions();
-  await bootstrapSlackBridge();
   scheduleAllReminders();
   await configureMiniAppMenuButton();
   await configureTelegramCommands();
@@ -5401,7 +5460,30 @@ async function answerCallback(query, text = "") {
   }
 }
 
+function markCallbackQuerySeen(queryId) {
+  const id = String(queryId || "").trim();
+  if (!id) return false;
+  const now = Date.now();
+  const seenAt = callbackQuerySeen.get(id);
+  if (seenAt && now - seenAt < 5 * 60 * 1000) {
+    return true;
+  }
+  callbackQuerySeen.set(id, now);
+  if (callbackQuerySeen.size > 4000) {
+    for (const [knownId, ts] of callbackQuerySeen.entries()) {
+      if (now - ts > 10 * 60 * 1000) {
+        callbackQuerySeen.delete(knownId);
+      }
+    }
+  }
+  return false;
+}
+
 bot.on("callback_query", async (query) => {
+  if (markCallbackQuerySeen(query?.id)) {
+    await answerCallback(query);
+    return;
+  }
   const chatId = query?.message?.chat?.id;
   const data = String(query?.data || "");
 
@@ -5738,5 +5820,5 @@ bot.on("message", async (msg) => {
   }
 });
 
-console.log("Terminal bot started (Telegram primary, Slack optional).");
+console.log("Terminal bot started (Telegram primary).");
 logNotionSyncStatus();
