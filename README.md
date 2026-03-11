@@ -1,120 +1,177 @@
-# TermBot
+# TermBot V0.2 (Schenni)
 
-TermBot ist ein Telegram-Bot fuer dein lokales Terminal, der gleichzeitig als persoenlicher Assistant arbeitet.
+TermBot ist ein lokaler Telegram-Bot, der dein Terminal und eine persistente Codex-Session auf deinem Rechner steuert.
+Statt nur Kommandos abzuschicken, arbeitest du im Chat mit einem Assistant zusammen.
 
-Der entscheidende Unterschied: **Sobald Codex laeuft, unterhaeltst du dich im Chat mit deinem Assistant** und laesst ihn Aufgaben erledigen, statt nur rohe Shell-Kommandos zu schicken.
+> Hinweis: Community-Projekt. Keine offizielle Verbindung zu OpenAI, Telegram oder Slack.
 
-> Hinweis: TermBot ist ein unabhaengiges Open-Source-Projekt und **nicht** mit OpenAI oder Telegram verbunden, gesponsert oder offiziell endorsed.
+## Inhaltsverzeichnis
 
-## Was TermBot besonders macht
+- [1. Was TermBot kann](#1-was-termbot-kann)
+- [2. Architektur auf einen Blick](#2-architektur-auf-einen-blick)
+- [3. Voraussetzungen](#3-voraussetzungen)
+- [4. Quick Start (lokal)](#4-quick-start-lokal)
+- [5. Konfiguration (.env)](#5-konfiguration-env)
+- [6. Telegram-Kommandos](#6-telegram-kommandos)
+- [7. Lokale CLI-Kommandos](#7-lokale-cli-kommandos)
+- [8. Mini-App und Tunnel](#8-mini-app-und-tunnel)
+- [9. Persoenlichkeit und Memory](#9-persoenlichkeit-und-memory)
+- [10. Voice-Transkription](#10-voice-transkription)
+- [11. Notion Sync (optional)](#11-notion-sync-optional)
+- [12. Betrieb](#12-betrieb)
+- [13. Tests und Diagnose](#13-tests-und-diagnose)
+- [14. Troubleshooting](#14-troubleshooting)
+- [15. Sicherheit](#15-sicherheit)
+- [16. Projektstruktur](#16-projektstruktur)
+- [17. GitHub Release-Flow](#17-github-release-flow)
+- [18. Lizenz und Marken](#18-lizenz-und-marken)
 
-- Terminal-Steuerung per Telegram fuer deinen lokalen Rechner
-- Optionaler Slack-Bridge-Modus (Socket Mode)
-- Assistant-Modus ueber Codex fuer echte Zusammenarbeit im Chat
-- Eigene Persoenlichkeit pro User (`/setupassistant`)
-- Merkt sich deine Vorlieben dauerhaft (Name, Ton, Preferences)
-- Reminder, Daily-Routinen und Projekt-Kontext in einem Bot
-- Mini-App Command Center mit Live-Ausgabe, Events und Systemstatus
+## 1. Was TermBot kann
 
-## Der Bot im Alltag
+- Telegram steuert lokale Shell-Kommandos und Codex-Sessions.
+- Persistente Codex-Session via `tmux` mit Chat-Weiterfuehrung.
+- Smart-Mix: normaler Chat als Assistant-Input, `/sh` fuer explizite Shell.
+- Mini-App Command Center mit Live-Ausgabe, Events und Runtime-Status.
+- Reminder/Produktivitaet: Timer, einmalige Reminder, taegliche Reminder, Terminal-Reminder.
+- User-Profil + Persona-Overlay (`V3_PERSONALITY.md`) fuer konsistente Antworten.
+- Optional: Slack Socket Mode Bridge.
+- Optional: Notion Activity Sync (API oder MCP).
+- Optional: Voice-Nachrichten -> Transkript -> normale Verarbeitung.
 
-Nach `/codexstart` oder `/ask <text>` nutzt du TermBot wie einen Assistant:
+## 2. Architektur auf einen Blick
 
-- "Plane meinen Tag und setze mir 2 Erinnerungen"
-- "Fasse meine offenen Tasks zusammen"
-- "Erstelle mir die naechsten 3 Schritte fuer dieses Projekt"
-- "Erinnere mich taeglich 09:00 an den Terminal-Check"
+- [`bot.js`](./bot.js): Hauptprozess, Telegram/Slack-Handling, Runtime-Orchestrierung, Reminder, Mini-App API.
+- [`scripts/termbot-supervisor.js`](./scripts/termbot-supervisor.js): Supervisor-Startpunkt (`npm run start`).
+- [`scripts/codexbot-daemon.js`](./scripts/codexbot-daemon.js): langlebiger Daemon fuer Codex-Runs.
+- [`scripts/codexbot-cli.js`](./scripts/codexbot-cli.js): lokale Steuerung (`bot start|stop|status|ask|...`).
+- [`public/telegram-miniapp/`](./public/telegram-miniapp): Mini-App UI.
+- [`data/`](./data): lokale Runtime-Dateien (Events, State, Profile, Reminder).
 
-Du chattest normal weiter, und TermBot arbeitet die Aufgaben in der laufenden Session ab.
+## 3. Voraussetzungen
 
-## Persoenlichkeit und Memory
+- Node.js 22+ (empfohlen)
+- `npm`
+- `tmux`
+- Telegram-Bot-Token von BotFather
+- Eigene Telegram User ID fuer Allowlist
+- Optional fuer Tunnel: `cloudflared`
+- Optional fuer Voice: `python3` + OpenAI API Key (je nach Setup)
 
-Mit `/setupassistant` konfigurierst du:
-
-- deinen Namen
-- den Namen des Assistants
-- Kommunikationsstil (formal/leger/custom)
-- eigene Preferences
-
-TermBot speichert das lokal in `data/user-profile.json` und synchronisiert den Profilblock in `V3_PERSONALITY.md`.
-Bei neuen Codex-Sessions wird dieses Profil automatisch als Verhalten geladen (konfigurierbar ueber `BOT_PERSONALITY_AUTO_APPLY`).
-Optional lernt TermBot zusaetzliche Praeferenz-Hinweise aus deinem Chat mit (`BOT_PREFERENCE_LEARNING=1`) und nutzt sie in neuen Sessions.
-
-## Feature Matrix
-
-| Bereich | Was du bekommst |
-|---|---|
-| Terminal Control | Shell/Terminal-Steuerung aus Telegram im Idle-Modus |
-| Codex Assistant | Interaktive, persistente Codex-Session via tmux |
-| Chat Collaboration | Normale Chat-Nachrichten werden waehrend Codex-Lauf als Input verarbeitet |
-| Productivity | `/timer`, `/remind`, `/daily`, `/terminal`, `/reminders`, `/remindoff` |
-| Project Context | `/projects` fuer letzte Projektkontexte und Restore |
-| Mini App | Tabs fuer Coding, Raw, Events, System + direkte Eingaben |
-| Voice | Audio/Voice -> Transkript -> Verarbeitung wie Text |
-| Notion Sync (optional) | Aktivitaeten als Notion-Eintraege (API oder MCP) |
-| Slack (optional) | Socket-Mode Steuerung mit denselben Core-Commands |
-
-## Kern-Kommandos
-
-- `/start` Hilfe und Startpanel
-- `/setupassistant` Assistant-Profil einrichten
-- `/codexstart` Codex-Session starten
-- `/ask <text>` Prompt direkt an Codex
-- `/sh <command>` Shell-Command explizit ausfuehren (Smart-Mix)
-- `/projects` letzte Projekte/Sessions
-- `/panel` Mini-App Button senden
-- `/panelstatus` Mini-App/Tunnel/API Status
-- `/status`, `/pwd`, `/stopcodex`, `/cancel`
-- `/timer`, `/remind`, `/daily`, `/terminal`, `/reminders`, `/remindoff`
-
-## Quick Start
+## 4. Quick Start (lokal)
 
 ```bash
 npm install
 cp .env.example .env
-npm run start
 ```
 
-Mindestens setzen in `.env`:
+`.env` minimal setzen:
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_ALLOWED_USER_ID`
-- `BOT_CWD=/absoluter/pfad/zum/projekt`
+- `BOT_CWD` (absoluter Pfad zu diesem Repo)
+- `CODEX_HOME` (absoluter Pfad zu deinem `.codex`)
+- `CODEX_CWD` (absoluter Pfad zu diesem Repo)
 
-Empfohlen fuer vollen Assistant-Betrieb:
+Starten:
+
+```bash
+npm run start
+```
+
+## 5. Konfiguration (.env)
+
+Wichtige Schalter fuer den stabilen Default-Betrieb:
 
 - `BOT_CODEX_BACKEND=tmux`
-- `BOT_CHAT_TYPING_ACTION=1` (Telegram zeigt "schreibt...")
 - `BOT_AUTO_START_CODEX=1`
 - `BOT_PROMPT_ON_START=1`
 - `BOT_SINGLE_INSTANCE=1`
+- `BOT_ENABLE_RESTART_COMMAND=1`
 - `BOT_RESTART_HEALTH_TIMEOUT_MS=15000`
 - `BOT_RESTART_READY_FILE=data/runtime/restart-ready.json`
+- `BOT_CHAT_TYPING_ACTION=1`
+- `BOT_CHAT_SEND_THINKING_MARKER=1`
+
+Profil/Persona:
+
 - `BOT_PERSONALITY_AUTO_APPLY=1`
-- `CODEX_YOLO=0` (sicherer Default)
+- `BOT_PERSONALITY_FILE=V3_PERSONALITY.md`
+- `BOT_PERSONALITY_MAX_CHARS=12000`
+- `BOT_PREFERENCE_LEARNING=1`
+- `BOT_PREFERENCE_LEARNING_MAX_HINTS=20`
+
+Mini-App:
+
 - `BOT_WEBAPP_ENABLE=1`
-- `BOT_WEBAPP_URL=https://...` (feste Domain fuer Mini-App)
-- `BOT_CLOUDFLARE_TUNNEL_MODE=named`
-- `BOT_CLOUDFLARE_TUNNEL_NAME=<dein-tunnel-name>`
+- `BOT_WEB_PORT=8787`
+- `BOT_WEB_HOST=127.0.0.1`
+- `BOT_WEBAPP_URL=https://...` (feste URL empfohlen)
 
-### Cloudflare Tunnel Modi
+## 6. Telegram-Kommandos
 
-`BOT_CLOUDFLARE_TUNNEL_MODE` steuert den Tunnel-Betrieb:
+Core:
 
-- `auto` (Default): nutzt `named`, wenn `BOT_CLOUDFLARE_TUNNEL_NAME` gesetzt ist, sonst `quick` bei leerer/trycloudflare `BOT_WEBAPP_URL`
-- `named`: startet `cloudflared tunnel run <name>` (empfohlen fuer stabilen Betrieb)
-- `quick`: startet einen rotierenden `trycloudflare` Quick Tunnel
-- `off`: kein durch den Bot gemanagter Tunnel
+- `/start` Hilfe/Quickstart
+- `/setupassistant` Assistenten-Profil einrichten
+- `/codexstart` Codex-Session starten
+- `/ask <text>` Prompt direkt an Codex
+- `/status` Runtime-Status anzeigen
+- `/stopcodex` Session stoppen
+- `/cancel` laufenden Vorgang abbrechen
+- `/pwd` aktuelles Arbeitsverzeichnis
 
-Empfohlene Named-Tunnel-Konfiguration:
+Shell und Kontext:
+
+- `/sh <command>` Shell-Befehl (nur wenn keine aktive Codex-Session laeuft)
+- `/projects` letzte Projektkontexte anzeigen
+- `/panel` Mini-App-Link senden
+- `/panelstatus` Mini-App/Tunnel/API-Status
+
+Produktivitaet:
+
+- `/timer <dauer> <text>` z. B. `/timer 25m Fokus`
+- `/remind <hh:mm> <text>` einmalig
+- `/daily <hh:mm> <text>` taeglich
+- `/terminal <hh:mm>` taeglicher Terminal-Check
+- `/reminders` aktive Reminder
+- `/remindoff <id>` Reminder deaktivieren
+
+## 7. Lokale CLI-Kommandos
+
+```bash
+npm run bot:start
+npm run bot:status
+npm run bot:ask -- "Sag nur OK"
+npm run bot:new
+npm run bot:cancel
+npm run bot:logs
+npm run bot:stop
+```
+
+Direktstart ohne Supervisor:
+
+```bash
+npm run bot:direct
+```
+
+## 8. Mini-App und Tunnel
+
+Die Mini-App ist unter `http://127.0.0.1:8787/telegram-miniapp/index.html` erreichbar (lokal).
+
+Cloudflare Tunnel Modus:
+
+- `BOT_CLOUDFLARE_TUNNEL_MODE=auto` (Default)
+- `named` fuer stabile eigene Domain
+- `quick` fuer temporaere TryCloudflare-URL
+- `off` deaktiviert Bot-gemanagten Tunnel
+
+Empfohlen fuer Produktion:
 
 - `BOT_CLOUDFLARE_TUNNEL_MODE=named`
 - `BOT_CLOUDFLARE_TUNNEL_NAME=termbot`
 - `BOT_WEBAPP_URL=https://bot.example.com`
-- optional: `BOT_CLOUDFLARE_CONFIG_PATH=/Users/<user>/.cloudflared/config.yml`
-- optional statt `BOT_WEBAPP_URL`: `BOT_CLOUDFLARE_TUNNEL_HOSTNAME=bot.example.com`
 
-Minimaler Setup fuer Named Tunnel (einmalig):
+Einmaliges Named-Tunnel-Setup:
 
 ```bash
 cloudflared tunnel login
@@ -122,87 +179,47 @@ cloudflared tunnel create termbot
 cloudflared tunnel route dns termbot bot.example.com
 ```
 
-Optional fuer Slack:
+## 9. Persoenlichkeit und Memory
 
-- `SLACK_BOT_ENABLED=1`
-- `SLACK_BOT_TOKEN=xoxb-...`
-- `SLACK_APP_TOKEN=xapp-...` (Socket Mode)
-- optional: `SLACK_ALLOWED_USER_ID=U...`
-- optional: `SLACK_ALLOWED_CHANNEL_ID=C...`
-- optional: `SLACK_STARTUP_CHANNEL_ID=C...`
+- `/setupassistant` schreibt User-Profile nach `data/user-profile.json`.
+- Profilblock wird in `V3_PERSONALITY.md` synchronisiert.
+- Bei neuen Codex-Sessions wird dieses Profil automatisch injiziert.
+- Lern-Hinweise aus Chats werden optional ueber `BOT_PREFERENCE_LEARNING` gespeichert.
 
-## Architektur
+## 10. Voice-Transkription
 
-- `bot.js`: Telegram/Slack Controller, Session-Orchestrierung, Reminder, Profile, Mini-App API
-- `scripts/codexbot-daemon.js`: lokaler Daemon fuer langlebige Codex-Runs
-- `scripts/codexbot-cli.js`: lokale CLI (`start|stop|status|ask|new|cancel|repl|logs`)
-- `scripts/restart-bot-helper.js`: robuster Self-Restart ohne Prozess-Race
-- `scripts/termbot-supervisor.js`: Supervisor-First Runtime (Single Source of Truth)
-- `scripts/bot-doctor.js`: Runtime-Diagnose (`npm run bot:doctor`)
-- `scripts/bot-restart-test.js`: lokaler Restart-Smoke (`npm run bot:restart-test`)
-- `public/telegram-miniapp/*`: WebApp Command Center
-- `data/`: lokale Laufzeitdaten (state, logs, reminders, profile)
-- `data/runtime/events.jsonl`: strukturierte Runtime-Events (`command_*`, `restart_*`, `runtime_*`)
+- Aktivierung: `BOT_VOICE_ENABLED=1`
+- Max-Laenge: `BOT_VOICE_MAX_DURATION_SEC=240`
+- Standardskript: `$CODEX_HOME/skills/transcribe/scripts/transcribe_diarize.py`
+- Modell: `BOT_VOICE_TRANSCRIBE_MODEL=gpt-4o-mini-transcribe`
 
-## Container Deploy (Server)
+Ablauf:
 
-Voraussetzung: Docker + Docker Compose Plugin auf dem Server.
+1. Voice/Audio empfangen
+2. Transkribieren
+3. Text wie normale Chat-Nachricht weiterverarbeiten
 
-```bash
-git clone <dein-repo-url>
-cd TermBot
-cp .env.example .env
-# .env mit echten Werten fuellen (mindestens TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USER_ID)
-docker compose up -d --build
-```
+## 11. Notion Sync (optional)
 
-Logs/Status:
+- Aktivieren: `NOTION_SYNC_ENABLED=1`
+- Modus: `NOTION_SYNC_MODE=auto` (API wenn Token vorhanden, sonst MCP)
+- Modus: `NOTION_SYNC_MODE=api`
+- Modus: `NOTION_SYNC_MODE=mcp`
 
-```bash
-docker compose logs -f termbot
-docker compose ps
-```
+Fuer API-Modus setzen:
 
-Ausfuehrliche Schritt-fuer-Schritt-Anleitung:
+- `NOTION_API_TOKEN`
+- `NOTION_DATABASE_ID`
 
-- `docs/CONTAINER_DEPLOY.md`
+## 12. Betrieb
 
-Container bringt mit:
-
-- `node 22`
-- `tmux` (fuer Codex-Session-Backend)
-- `@openai/codex` CLI
-- `cloudflared` (Quick oder Named Tunnel)
-- Healthcheck auf `http://127.0.0.1:8787/telegram-miniapp/index.html`
-
-Wichtig fuer Codex im Container:
-
-- `CODEX_HOME` ist auf Volume `codex_home` gelegt (persistente Auth/Profile)
-- Falls noetig im Container einmalig einloggen: `docker compose exec termbot codex login`
-
-## Sicherheit
-
-- Zugriff nur fuer `TELEGRAM_ALLOWED_USER_ID`
-- Mini-App Requests werden per Telegram `initData` validiert
-- Rate Limits fuer Live/Input API
-- Secrets nur in `.env`, nie committen
-- Laufzeitdaten bleiben lokal in `data/`
-
-## Trademark & Affiliation
-
-- TermBot ist ein Community-Projekt.
-- `Codex`, `OpenAI` und `Telegram` sind Marken ihrer jeweiligen Inhaber.
-- Die Nennung dient nur der Kompatibilitaetsbeschreibung.
-
-## Betrieb
-
-### One-click Start (macOS)
+One-click (macOS):
 
 ```bash
 ./START_BOT.command
 ```
 
-### PM2 (optional)
+PM2 (optional):
 
 ```bash
 pm2 start ecosystem.config.cjs
@@ -210,18 +227,96 @@ pm2 save
 pm2 startup
 ```
 
-## Tests
+Docker/Server:
+
+- Siehe [`docs/CONTAINER_DEPLOY.md`](./docs/CONTAINER_DEPLOY.md)
+
+Kurzstart:
+
+```bash
+docker compose up -d --build
+docker compose logs -f termbot
+docker compose ps
+```
+
+## 13. Tests und Diagnose
 
 ```bash
 npm test
 npm run test:miniapp
+npm run test:runtime
 npm run bot:doctor
-# optional auto-cleanup of stale runtime state / duplicate processes:
 npm run bot:doctor -- --fix
-# optional (erfordert laufenden Supervisor):
+```
+
+Restart-Smoke (benoetigt laufenden Supervisor):
+
+```bash
 npm run bot:restart-test
 ```
 
-## Lizenz
+## 14. Troubleshooting
 
-Aktuell keine `LICENSE` im Repo enthalten.
+`A session is already running`:
+
+1. `/status` pruefen
+2. `/stopcodex` ausfuehren
+3. neu mit `/codexstart` starten
+
+Mini-App nicht erreichbar:
+
+1. `BOT_WEBAPP_ENABLE=1` pruefen
+2. `BOT_WEB_PORT` und `BOT_WEB_HOST` pruefen
+3. `/panelstatus` aufrufen
+4. `npm run bot:logs` ansehen
+
+Codex startet nicht:
+
+1. `codex login` lokal pruefen
+2. `CODEX_HOME` und `CODEX_CWD` pruefen
+3. `tmux` Verfuegbarkeit pruefen
+4. `npm run bot:doctor` ausfuehren
+
+## 15. Sicherheit
+
+- Zugriff auf Telegram-Seite per `TELEGRAM_ALLOWED_USER_ID` eingeschraenkt.
+- Mini-App Requests werden ueber Telegram `initData` validiert.
+- API Endpunkte sind standardmaessig lokal (`BOT_WEB_HOST=127.0.0.1`).
+- Rate-Limits fuer Live- und Input-Endpunkte aktiv.
+- Secrets nie committen, nur in `.env`.
+- Laufzeitdaten liegen lokal in `data/`.
+
+## 16. Projektstruktur
+
+```text
+.
+|- bot.js
+|- V3_PERSONALITY.md
+|- scripts/
+|  |- termbot-supervisor.js
+|  |- codexbot-daemon.js
+|  |- codexbot-cli.js
+|  |- bot-doctor.js
+|  `- tests/
+|- public/telegram-miniapp/
+|- docs/
+|  |- CONTAINER_DEPLOY.md
+|  |- GITHUB_PUBLISH_CHECKLIST.md
+|  `- RELEASE_v1.0.1-restart-hotfix.md
+`- data/
+```
+
+## 17. GitHub Release-Flow
+
+Empfohlener Ablauf:
+
+1. Tests/Checks laufen lassen (`npm test`, `npm run bot:doctor`).
+2. Secret-Scan ausfuehren (siehe [`docs/GITHUB_PUBLISH_CHECKLIST.md`](./docs/GITHUB_PUBLISH_CHECKLIST.md)).
+3. Commit erstellen.
+4. Branch pushen und PR erstellen.
+
+## 18. Lizenz und Marken
+
+- Aktuell ist keine `LICENSE`-Datei im Repo hinterlegt.
+- `OpenAI`, `Codex`, `Telegram`, `Slack` sind Marken ihrer jeweiligen Inhaber.
+- Nennung dient nur zur Kompatibilitaetsbeschreibung.
