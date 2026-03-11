@@ -126,6 +126,9 @@ const BOT_CHAT_TYPING_ACTION = String(process.env.BOT_CHAT_TYPING_ACTION || "1")
 const BOT_CHAT_TYPING_INTERVAL_MS = Number.isFinite(Number(process.env.BOT_CHAT_TYPING_INTERVAL_MS))
   ? Math.max(1500, Number(process.env.BOT_CHAT_TYPING_INTERVAL_MS))
   : 3500;
+const BOT_CHAT_THINKING_MARKER_DELAY_MS = Number.isFinite(Number(process.env.BOT_CHAT_THINKING_MARKER_DELAY_MS))
+  ? Math.max(1000, Number(process.env.BOT_CHAT_THINKING_MARKER_DELAY_MS))
+  : 12000;
 const BOT_REPLY_BUTTONS_ENABLED = String(process.env.BOT_REPLY_BUTTONS_ENABLED || "1") !== "0";
 const BOT_CHAT_ESSENTIAL_MAX_CHARS = Number.isFinite(Number(process.env.BOT_CHAT_ESSENTIAL_MAX_CHARS))
   ? Math.max(120, Number(process.env.BOT_CHAT_ESSENTIAL_MAX_CHARS))
@@ -3268,6 +3271,8 @@ function beginNewTurn(run, reason, options = {}) {
   run.currentTurnPromptText = String(options.promptText || "").trim();
   run.currentTurnPromptComparable = normalizeComparableText(run.currentTurnPromptText);
   run.currentTurnSuppressOutput = Boolean(options.suppressOutput);
+  clearThinkingMarkerTimer(run);
+  run.thinkingMarkerSent = false;
   run.turnBaselineScreen = String(run.screenTextFull || run.screenText || "");
   pushRunEvent(
     run,
@@ -3281,6 +3286,40 @@ function stopTypingTicker(run) {
     run.typingTimer = null;
     run.lastTypingAt = 0;
   }
+}
+
+function clearThinkingMarkerTimer(run) {
+  if (run?.thinkingMarkerTimer) clearTimeout(run.thinkingMarkerTimer);
+  if (run) {
+    run.thinkingMarkerTimer = null;
+  }
+}
+
+function scheduleThinkingMarker(run) {
+  if (!BOT_CHAT_SEND_THINKING_MARKER) return;
+  if (!isActiveCodexRun(run)) return;
+  if (!run.awaitingTurnCompletion) return;
+  if (run.currentTurnSuppressOutput) return;
+  if (isSlackChatId(run.chatId)) return;
+  if (run.thinkingMarkerSent) return;
+  if (run.thinkingMarkerTimer) return;
+
+  const turn = run.turnIndex;
+  run.thinkingMarkerTimer = setTimeout(async () => {
+    run.thinkingMarkerTimer = null;
+    if (!isActiveCodexRun(run)) return;
+    if (!run.awaitingTurnCompletion) return;
+    if (run.turnIndex !== turn) return;
+    if (run.currentTurnSuppressOutput) return;
+    if (run.thinkingMarkerSent) return;
+    run.thinkingMarkerSent = true;
+    logRuntimeEvent("thinking_marker_sent", {
+      chatId: String(run.chatId || ""),
+      turn: run.turnIndex,
+      delayMs: BOT_CHAT_THINKING_MARKER_DELAY_MS,
+    });
+    await sendMessage(run.chatId, "thinking ...");
+  }, BOT_CHAT_THINKING_MARKER_DELAY_MS);
 }
 
 function startTypingTicker(run) {
@@ -3306,12 +3345,11 @@ function startTypingTicker(run) {
 
 async function notifyTurnThinking(run) {
   if (!isActiveCodexRun(run)) return;
-  if (run.lastThinkingTurn === run.turnIndex) {
-    startTypingTicker(run);
-    return;
+  if (run.lastThinkingTurn !== run.turnIndex) {
+    run.lastThinkingTurn = run.turnIndex;
   }
-  run.lastThinkingTurn = run.turnIndex;
   startTypingTicker(run);
+  scheduleThinkingMarker(run);
 }
 
 function currentReplyPromptSignature(run) {
@@ -3868,6 +3906,7 @@ function clearCodexTimers(run) {
   if (run.timeoutTimer) clearTimeout(run.timeoutTimer);
   if (run.captureTimer) clearInterval(run.captureTimer);
   stopTypingTicker(run);
+  clearThinkingMarkerTimer(run);
   run.timeoutTimer = null;
   run.captureTimer = null;
 }
@@ -3937,6 +3976,7 @@ async function maybeNotifyTurnDone(run) {
 
   run.awaitingTurnCompletion = false;
   run.turnDoneNotified = true;
+  clearThinkingMarkerTimer(run);
   stopTypingTicker(run);
   pushRunEvent(run, `turn ${run.turnIndex} considered done after ${idleMs}ms idle`);
   const turnTextRaw = buildTurnResultTwoLiner(run);
@@ -4120,6 +4160,33 @@ function looksLikeCodexPrompt(screenText) {
   return hasBranding && hasPrompt;
 }
 
+function looksLikeCodexTrustPrompt(screenText) {
+  const text = String(screenText || "");
+  if (!text) return false;
+  return (
+    /do you trust the contents of this directory\?/i.test(text) &&
+    /1\.\s*yes,\s*continue/i.test(text) &&
+    /press enter to continue/i.test(text)
+  );
+}
+
+async function maybeAutoAcceptCodexTrustPrompt(run, screenText, reasonLabel) {
+  if (!isActiveCodexRun(run)) return false;
+  if (run.trustPromptHandled) return false;
+  if (!looksLikeCodexTrustPrompt(screenText)) return false;
+
+  run.trustPromptHandled = true;
+  pushRunEvent(run, `codex trust prompt detected -> auto-accept (${reasonLabel})`);
+  try {
+    await tmux.sendKeys(BOT_TMUX_BIN, run.sessionName, ["1", "C-m"]);
+    await wait(300);
+    return true;
+  } catch (err) {
+    pushRunEvent(run, `trust prompt auto-accept failed: ${trimErrorMessage(err)}`);
+    return false;
+  }
+}
+
 async function ensureCodexPromptReady(run, reasonLabel = "input") {
   if (!isActiveCodexRun(run)) return false;
   if (run.promptReady) return true;
@@ -4132,6 +4199,10 @@ async function ensureCodexPromptReady(run, reasonLabel = "input") {
       try {
         const captured = await tmux.capturePane(BOT_TMUX_BIN, run.sessionName, BOT_CAPTURE_LINES);
         const normalized = normalizeCapturedScreen(captured);
+        const acceptedTrustPrompt = await maybeAutoAcceptCodexTrustPrompt(run, normalized, reasonLabel);
+        if (acceptedTrustPrompt) {
+          continue;
+        }
         if (looksLikeCodexPrompt(normalized)) {
           run.promptReady = true;
           pushRunEvent(run, `codex prompt ready (${reasonLabel})`);
@@ -4338,12 +4409,15 @@ async function startCodexTmuxRun(chatId, command, options = {}) {
     personalityPath: resolvePersonalityFilePath(BOT_PERSONALITY_FILE),
     promptReady: false,
     promptReadyPromise: null,
+    trustPromptHandled: false,
     cancelRequested: false,
     cancelReason: null,
     timeoutTimer: null,
     captureTimer: null,
     typingTimer: null,
     lastTypingAt: 0,
+    thinkingMarkerTimer: null,
+    thinkingMarkerSent: false,
     done: false,
   };
 

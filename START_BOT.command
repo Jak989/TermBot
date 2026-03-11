@@ -77,7 +77,7 @@ fi
 if command -v pkill >/dev/null 2>&1; then
   pkill -f "cloudflared tunnel --url http://127.0.0.1:8787" >/dev/null 2>&1 || true
   pkill -f "scripts/termbot-supervisor.js" >/dev/null 2>&1 || true
-  pkill -f "/Users/jakob/Documents/New project/bot.js" >/dev/null 2>&1 || true
+  pkill -f "$PROJECT_DIR/bot.js" >/dev/null 2>&1 || true
 fi
 
 : > "$CLOUDFLARED_LOG"
