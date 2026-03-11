@@ -1177,17 +1177,17 @@ function extractReplyPrompt(screenText) {
     .filter(Boolean);
   if (!lines.length) return "";
 
-  const startIndex = Math.max(0, lines.length - 24);
+  const startIndex = Math.max(0, lines.length - 40);
   for (let i = lines.length - 1; i >= startIndex; i -= 1) {
     const line = lines[i];
-    if (/^\s*(question|follow-up)\s*[:\-]/i.test(line)) {
+    if (/^\s*(question|follow[- ]?up|rueckfrage|rückfrage)\s*[:\-]/i.test(line)) {
       return line.slice(0, 220);
     }
-    if (/[?]$/.test(line) && line.length <= 220) {
-      return line;
-    }
     if (
-      /(reply|respond|confirm|choose|select|decide|proceed|continue)/i.test(line) &&
+      /^(please|bitte)\b/i.test(line) &&
+      /(reply|respond|answer|confirm|choose|select|decide|proceed|continue|antworte|antworten|waehle|wähle)/i.test(
+        line
+      ) &&
       line.length <= 220
     ) {
       return line;
@@ -2596,48 +2596,70 @@ function codexTurnState(run) {
   return run.awaitingTurnCompletion ? "thinking ..." : "done";
 }
 
-function buildTurnResultTwoLiner(run) {
-  const raw = String(run?.screenTextFull || run?.screenText || "");
-  const assistantBlock = extractCodexAssistantBlock(raw);
-  if (assistantBlock) {
-    return assistantBlock;
-  }
-  const lowerPreview = String(run?.lastInputPreview || "").toLowerCase();
+function normalizeCapturedLine(line) {
+  return String(line || "").replace(/\s+/g, " ").trim();
+}
+
+function stripLeadingListMarker(line) {
+  return normalizeCapturedLine(line).replace(/^[-*]\s+/, "").trim();
+}
+
+function isCodexNoiseLine(line, options = {}) {
+  const normalized = normalizeCapturedLine(line);
+  if (!normalized) return true;
+  const stripped = stripLeadingListMarker(normalized);
+  if (!stripped) return true;
+  const lower = stripped.toLowerCase();
+  const lowerPreview = String(options?.lowerPreview || "").trim().toLowerCase();
+  const sessionName = String(options?.sessionName || "").trim();
+
   const noisePatterns = [
     /^thinking\s*\.\.\.$/i,
     /^done$/i,
+    /^antwort gesendet\.?$/i,
     /^=+$/,
     /^[-_]{3,}$/,
     /^\[(\s*system\s*\|\s*meta|\s*answer\s*\|\s*(live|done))\]$/i,
     /^(state|mode|session|status|runtime|turn|input|rev|profile|last_input|last_event)\s*:/i,
     /^(global commands:|idle mode:|while codex is running:|mini app:)/i,
-    /^- \/[a-z0-9_-]+/i,
+    /^\/[a-z0-9_-]+/i,
     /^(telegram terminal bot is ready|codex session (finished|cancelled|timed out))/i,
     /^[\u2500-\u257f]+$/,
     /^\s*›\s.+$/,
     /^\s*gpt-\d+/i,
-    /^\s*model:\s*/i,
-    /^\s*directory:\s*/i,
-    /^\s*Tip:\s*/i,
-    /^\s*\(Teil\s+\d+\/\d+\)\s*$/i,
-    /^\s*searched\s+/i,
-    /^\s*profile source:\s*/i,
-    /^\s*use the following operating profile/i,
-    /^\s*\[profile_(start|end)\]/i,
-    /^\s*##\s*\d+\./i,
-    /^\s*###\s+/i,
+    /^model:\s*/i,
+    /^directory:\s*/i,
+    /^\?\s+for shortcuts/i,
+    /^tip:\s*/i,
+    /^\(teil\s+\d+\/\d+\)\s*$/i,
+    /^searched\s+/i,
+    /^profile source:\s*/i,
+    /^use the following operating profile/i,
+    /^\[profile_(start|end)\]/i,
+    /^##\s*\d+\./i,
+    /^###\s+/i,
+    /^openai codex\s*\(v/i,
+    /^model:\s+loading\b/i,
+    /^hi\.\s+what do you need\?$/i,
   ];
+
+  if (noisePatterns.some((pattern) => pattern.test(stripped) || pattern.test(normalized))) return true;
+  if (sessionName && stripped.includes(sessionName)) return true;
+  if (lowerPreview && lowerPreview.length >= 6 && lower.includes(lowerPreview)) return true;
+  return false;
+}
+
+function buildTurnResultTwoLiner(run) {
+  const raw = String(run?.screenTextFull || run?.screenText || "");
+  const assistantBlock = extractCodexAssistantBlock(raw, run);
+  if (assistantBlock) {
+    return assistantBlock;
+  }
 
   const cleaned = raw
     .split("\n")
-    .map((line) => line.replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .filter((line) => {
-      if (noisePatterns.some((pattern) => pattern.test(line))) return false;
-      if (run?.sessionName && line.includes(run.sessionName)) return false;
-      if (lowerPreview && lowerPreview.length >= 6 && line.toLowerCase().includes(lowerPreview)) return false;
-      return true;
-    });
+    .map((line) => normalizeCapturedLine(line))
+    .filter((line) => !isCodexNoiseLine(line, { lowerPreview: run?.lastInputPreview, sessionName: run?.sessionName }));
 
   const deduped = [];
   for (const line of cleaned) {
@@ -2650,10 +2672,10 @@ function buildTurnResultTwoLiner(run) {
     return "Kein klarer Ergebnis-Text erkannt.";
   }
 
-  return deduped.join("\n");
+  return deduped.map((line) => stripLeadingListMarker(line)).join("\n");
 }
 
-function extractCodexAssistantBlock(screenText) {
+function extractCodexAssistantBlock(screenText, run) {
   const lines = String(screenText || "").split("\n");
   if (!lines.length) return "";
 
@@ -2667,36 +2689,29 @@ function extractCodexAssistantBlock(screenText) {
     current = null;
   };
 
+  const shouldStop = (line) => {
+    const normalized = normalizeCapturedLine(line);
+    if (!normalized) return false;
+    if (/^\s*›\s/.test(normalized)) return true;
+    if (/^\s*gpt-\d+/i.test(normalized)) return true;
+    if (/^\s*Tip:/i.test(normalized)) return true;
+    if (/^\s*model:\s*/i.test(normalized)) return true;
+    if (/^\s*directory:\s*/i.test(normalized)) return true;
+    if (/^\?\s+for shortcuts/i.test(normalized)) return true;
+    if (/^\s*[│╭╰].*/.test(normalized)) return true;
+    return false;
+  };
+
   for (const line of lines) {
-    if (/^\s*•\s+/.test(line)) {
+    if (/^\s*(?:•|●|◦|▪|▫|-)\s+/.test(line)) {
       flush();
-      const first = line.replace(/^\s*•\s+/, "").trimEnd();
+      const first = line.replace(/^\s*(?:•|●|◦|▪|▫|-)\s+/, "").trimEnd();
       current = first ? [first] : [];
       continue;
     }
     if (!current) continue;
 
-    if (/^\s*›\s/.test(line)) {
-      flush();
-      break;
-    }
-    if (/^\s*gpt-\d+/i.test(line)) {
-      flush();
-      break;
-    }
-    if (/^\s*Tip:/i.test(line)) {
-      flush();
-      break;
-    }
-    if (/^\s*╭|^\s*╰/.test(line)) {
-      flush();
-      break;
-    }
-    if (/^\s*model:\s*/i.test(line)) {
-      flush();
-      break;
-    }
-    if (/^\s*directory:\s*/i.test(line)) {
+    if (shouldStop(line)) {
       flush();
       break;
     }
@@ -2710,24 +2725,15 @@ function extractCodexAssistantBlock(screenText) {
   }
   flush();
 
-  const isMetaSegment = (text) => {
-    const lower = text.toLowerCase();
-    if (!lower) return true;
-    if (lower.includes("[profile_start]") || lower.includes("[profile_end]")) return true;
-    if (lower.includes("persoenlichkeits- und rollenprofil")) return true;
-    if (lower.includes("profil source:")) return true;
-    if (lower.includes("use the following operating profile")) return true;
-    if (lower.includes("aktueller status") && lower.includes("naechste 1-3 schritte")) return true;
-    if (/^searched\s+/im.test(lower)) return true;
-    if (/^ich hole kurz/im.test(lower)) return true;
-    if (/^i('|’)ll quickly/im.test(lower)) return true;
-    return false;
-  };
-
   for (let i = segments.length - 1; i >= 0; i -= 1) {
-    const segment = segments[i].trim();
+    const segmentLines = segments[i]
+      .split("\n")
+      .map((line) => normalizeCapturedLine(line))
+      .filter((line) => !isCodexNoiseLine(line, { lowerPreview: run?.lastInputPreview, sessionName: run?.sessionName }))
+      .map((line) => stripLeadingListMarker(line));
+    if (!segmentLines.length) continue;
+    const segment = segmentLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
     if (segment.length < 8) continue;
-    if (isMetaSegment(segment)) continue;
     return segment;
   }
   return "";
