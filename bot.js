@@ -129,10 +129,10 @@ const BOT_CHAT_TYPING_INTERVAL_MS = Number.isFinite(Number(process.env.BOT_CHAT_
 const BOT_REPLY_BUTTONS_ENABLED = String(process.env.BOT_REPLY_BUTTONS_ENABLED || "1") !== "0";
 const BOT_CHAT_ESSENTIAL_MAX_CHARS = Number.isFinite(Number(process.env.BOT_CHAT_ESSENTIAL_MAX_CHARS))
   ? Math.max(120, Number(process.env.BOT_CHAT_ESSENTIAL_MAX_CHARS))
-  : 600;
+  : 320;
 const BOT_CHAT_ESSENTIAL_MAX_LINES = Number.isFinite(Number(process.env.BOT_CHAT_ESSENTIAL_MAX_LINES))
   ? Math.max(1, Number(process.env.BOT_CHAT_ESSENTIAL_MAX_LINES))
-  : 5;
+  : 4;
 const BOT_ENABLE_RESTART_COMMAND = String(process.env.BOT_ENABLE_RESTART_COMMAND || "1") !== "0";
 const BOT_SINGLE_INSTANCE = String(process.env.BOT_SINGLE_INSTANCE || "1") !== "0";
 const BOT_RESTART_HEALTH_TIMEOUT_MS = Number.isFinite(Number(process.env.BOT_RESTART_HEALTH_TIMEOUT_MS))
@@ -1405,6 +1405,15 @@ function readPersonalityProfile() {
 function buildPersonalityBootstrapPrompt(profile) {
   const learnedOverlay = buildLearnedPreferenceOverlayText();
   const profileBody = learnedOverlay ? `${profile.text}\n\n${learnedOverlay}` : profile.text;
+  const schenniStyle = [
+    "User-facing answer style (mandatory):",
+    "- Persona: Schenni (keck, frech, unkonventionell, leicht ostdeutscher Einschlag).",
+    "- Default answer length: kurz und knackig (2-4 Zeilen oder 1 kurzer Absatz).",
+    "- Bei komplexen Themen: darf laenger sein, aber kompakt und ohne Labertext.",
+    "- Kleine Umgangssprache/leichte absichtliche Schreibfehler sind okay, aber Fakten muessen korrekt bleiben.",
+    "- Kein Vorlauf mit Meta-Texten (kein 'thinking', kein 'Antwort gesendet', keine UI-Reste).",
+    "- Keine Altantwort-Leaks: beantworte immer nur die aktuelle Frage.",
+  ].join("\n");
   const lines = [
     "Use the following operating profile as the default behavior for this entire session.",
     "Apply it to planning, execution, communication, project management, development, and testing outputs.",
@@ -1415,6 +1424,10 @@ function buildPersonalityBootstrapPrompt(profile) {
     "[PROFILE_START]",
     profileBody,
     "[PROFILE_END]",
+    "",
+    "[SCHENNI_STYLE_START]",
+    schenniStyle,
+    "[SCHENNI_STYLE_END]",
   ];
   return lines.join("\n");
 }
@@ -3019,6 +3032,114 @@ function cleanTurnOutputLines(lines, run) {
   return output;
 }
 
+function looksLikeTechnicalPrompt(promptText) {
+  const prompt = normalizeComparableText(promptText);
+  if (!prompt) return false;
+  const technicalPatterns = [
+    /\b(code|coding|funktion|function|javascript|typescript|python|java|sql|regex|api|sdk)\b/,
+    /\b(debug|bug|error|stacktrace|exception|test|unittest|integrationstest)\b/,
+    /\b(docker|kubernetes|k8s|tmux|terminal|shell|bash|zsh|git|commit|branch)\b/,
+    /\b(architektur|refactor|migration|deploy|pipeline|ci|cd)\b/,
+  ];
+  return technicalPatterns.some((pattern) => pattern.test(prompt));
+}
+
+function outputLooksLikeCode(text) {
+  const value = String(text || "");
+  if (!value) return false;
+  if (/```/.test(value)) return true;
+  if (/^\s*(function|const|let|var|class|def)\b/m.test(value)) return true;
+  if (/[{};]/.test(value) && /\b(return|=>|import|export)\b/.test(value)) return true;
+  return false;
+}
+
+function shouldForceCompactTurnOutput(promptText, outputText) {
+  const prompt = String(promptText || "").trim();
+  if (!prompt) return false;
+  if (looksLikeTechnicalPrompt(prompt)) return false;
+  if (outputLooksLikeCode(outputText)) return false;
+  if (prompt.length > 180) return false;
+  if (/\n{2,}/.test(outputText) && String(outputText || "").length > 500) return true;
+  const shortQuestionLike =
+    /^(wie|was|wer|wo|wann|wieviel|wie viele|wetter|temperatur|soll|kann|ist)\b/i.test(prompt) ||
+    /\?$/.test(prompt);
+  return shortQuestionLike;
+}
+
+function trimToBoundary(text, maxChars) {
+  const value = String(text || "").trim();
+  if (!value) return "";
+  if (value.length <= maxChars) return value;
+  const boundaries = [". ", "! ", "? ", "\n"];
+  let cut = -1;
+  for (const token of boundaries) {
+    const idx = value.lastIndexOf(token, maxChars);
+    if (idx > cut) cut = idx + token.length;
+  }
+  if (cut < Math.floor(maxChars * 0.55)) cut = maxChars;
+  return value.slice(0, cut).trim();
+}
+
+function compactTurnOutputText(text, maxLines, maxChars) {
+  const lines = String(text || "")
+    .split(/\r?\n/g)
+    .map((line) => stripLeadingListMarker(line))
+    .map((line) => line.replace(/^\d+\.\s+/, "").trim())
+    .map((line) => line.replace(/^searched\s+/i, "").trim())
+    .map((line) => line.replace(/\bhttps?:\/\/\S+/gi, "").replace(/\s{2,}/g, " ").trim())
+    .filter((line) => !/^https?:\/\/\S+$/i.test(line))
+    .filter((line) => !/^(quelle|source)\s*:/i.test(line))
+    .filter(Boolean);
+  if (!lines.length) return "";
+  const picked = lines.slice(0, Math.max(1, maxLines));
+  const joined = picked.join("\n");
+  return trimToBoundary(joined, Math.max(120, maxChars));
+}
+
+function applySchenniTone(text, promptText, options = {}) {
+  let value = String(text || "").trim();
+  if (!value) return "";
+  if (looksLikeTechnicalPrompt(promptText) || outputLooksLikeCode(value)) return value;
+
+  value = value
+    .replace(/\b[Nn]icht\b/g, "nich")
+    .replace(/\b[Uu]nd\b/g, "un")
+    .replace(/\b[Jj]etzt\b/g, "nu")
+    .replace(/\b[Vv]ielleicht\b/g, "vllt");
+
+  const prompt = normalizeComparableText(promptText);
+  const simpleMode = Boolean(options.simpleMode);
+  if (simpleMode) {
+    const weatherLike = /\b(wetter|temperatur|morgen|regen|wind)\b/.test(prompt);
+    const prefix = weatherLike ? "Nu pass uff: " : "Ick sach ma: ";
+    if (!new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(value)) {
+      value = `${prefix}${value.charAt(0).toLowerCase()}${value.slice(1)}`;
+    }
+    if (weatherLike && !/\b(jacke|schirm|mantel|regenjacke|pulli)\b/i.test(value)) {
+      value = `${value}\nNimm lieber ne Jacke mit, sonst maulste spaeter.`;
+    }
+  }
+  return value.trim();
+}
+
+function formatTurnChatOutput(run, rawText) {
+  let value = String(rawText || "").trim();
+  if (!value) return "";
+  if (/^Kein klarer Ergebnis-Text erkannt\.?$/i.test(value)) {
+    return "Ick hab grad keene saubere Antwort rausgezogen. Schick dit bitte kurz nochmal.";
+  }
+  const promptText = String(run?.currentTurnPromptText || "");
+  const simpleMode = shouldForceCompactTurnOutput(promptText, value);
+  if (simpleMode) {
+    value = compactTurnOutputText(value, BOT_CHAT_ESSENTIAL_MAX_LINES, BOT_CHAT_ESSENTIAL_MAX_CHARS);
+  }
+  value = applySchenniTone(value, promptText, { simpleMode });
+  if (simpleMode) {
+    value = compactTurnOutputText(value, BOT_CHAT_ESSENTIAL_MAX_LINES, BOT_CHAT_ESSENTIAL_MAX_CHARS);
+  }
+  return value.trim();
+}
+
 function buildTurnResultTwoLiner(run) {
   const primaryLines = extractTurnSegmentFromPrompt(run);
   const primary = cleanTurnOutputLines(primaryLines, run);
@@ -3820,7 +3941,8 @@ async function maybeNotifyTurnDone(run) {
   run.turnDoneNotified = true;
   stopTypingTicker(run);
   pushRunEvent(run, `turn ${run.turnIndex} considered done after ${idleMs}ms idle`);
-  const turnText = buildTurnResultTwoLiner(run);
+  const turnTextRaw = buildTurnResultTwoLiner(run);
+  const turnText = formatTurnChatOutput(run, turnTextRaw);
   logRuntimeEvent("turn_output_prepared", {
     chatId: String(run.chatId || ""),
     turn: run.turnIndex,
