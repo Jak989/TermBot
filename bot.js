@@ -3099,7 +3099,7 @@ function compactTurnOutputText(text, maxLines, maxChars) {
 function applySchenniTone(text, promptText, options = {}) {
   let value = String(text || "").trim();
   if (!value) return "";
-  if (looksLikeTechnicalPrompt(promptText) || outputLooksLikeCode(value)) return value;
+  if (outputLooksLikeCode(value)) return value;
 
   value = value
     .replace(/\b[Nn]icht\b/g, "nich")
@@ -3109,15 +3109,13 @@ function applySchenniTone(text, promptText, options = {}) {
 
   const prompt = normalizeComparableText(promptText);
   const simpleMode = Boolean(options.simpleMode);
-  if (simpleMode) {
-    const weatherLike = /\b(wetter|temperatur|morgen|regen|wind)\b/.test(prompt);
-    const prefix = weatherLike ? "Nu pass uff: " : "Ick sach ma: ";
-    if (!new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(value)) {
-      value = `${prefix}${value.charAt(0).toLowerCase()}${value.slice(1)}`;
-    }
-    if (weatherLike && !/\b(jacke|schirm|mantel|regenjacke|pulli)\b/i.test(value)) {
-      value = `${value}\nNimm lieber ne Jacke mit, sonst maulste spaeter.`;
-    }
+  const weatherLike = /\b(wetter|temperatur|morgen|regen|wind)\b/.test(prompt);
+  const prefix = weatherLike ? "Nu pass uff: " : "Ick sach ma: ";
+  if (!/^(nu pass uff:\s|ick sach ma:\s)/i.test(value)) {
+    value = `${prefix}${value.charAt(0).toLowerCase()}${value.slice(1)}`;
+  }
+  if (simpleMode && weatherLike && !/\b(jacke|schirm|mantel|regenjacke|pulli)\b/i.test(value)) {
+    value = `${value}\nNimm lieber ne Jacke mit, sonst maulste spaeter.`;
   }
   return value.trim();
 }
