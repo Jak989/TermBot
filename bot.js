@@ -82,6 +82,9 @@ const BOT_SUBMIT_MAX_ATTEMPTS = Number.isFinite(Number(process.env.BOT_SUBMIT_MA
   : 8;
 const BOT_CAPTURE_LINES = Number(process.env.BOT_CAPTURE_LINES || 120);
 const BOT_TURN_IDLE_DONE_MS = Number(process.env.BOT_TURN_IDLE_DONE_MS || 5000);
+const BOT_TURN_FORCE_DONE_MS = Number.isFinite(Number(process.env.BOT_TURN_FORCE_DONE_MS))
+  ? Math.max(BOT_TURN_IDLE_DONE_MS, Number(process.env.BOT_TURN_FORCE_DONE_MS))
+  : 30000;
 const BOT_CODEX_READY_TIMEOUT_MS = Number.isFinite(Number(process.env.BOT_CODEX_READY_TIMEOUT_MS))
   ? Math.max(1000, Number(process.env.BOT_CODEX_READY_TIMEOUT_MS))
   : 15000;
@@ -3349,6 +3352,10 @@ async function maybeNotifyTurnDone(run) {
 
   const idleMs = Date.now() - run.turnLastChangeAt;
   if (idleMs < BOT_TURN_IDLE_DONE_MS) return;
+  const screen = String(run.screenTextFull || run.screenText || "");
+  const promptVisible = looksLikeCodexPrompt(screen);
+  if (!promptVisible && idleMs < BOT_TURN_FORCE_DONE_MS) return;
+  if (screenIndicatesCodexWorking(run) && idleMs < BOT_TURN_FORCE_DONE_MS) return;
 
   run.awaitingTurnCompletion = false;
   run.turnDoneNotified = true;
