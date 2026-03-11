@@ -161,6 +161,7 @@ const BOT_VOICE_TRANSCRIBE_TIMEOUT_MS = Number.isFinite(Number(process.env.BOT_V
   : 180_000;
 
 const OUTPUT_CHUNK_SIZE = 3400;
+const TELEGRAM_TEXT_CHUNK_CHARS = 3500;
 const MAX_OUTPUT_CHARS = 50000;
 const CANCEL_FALLBACK_MS = 2500;
 const STREAM_FLUSH_MS = 1500;
@@ -1494,6 +1495,20 @@ async function resolvesWebAppHostViaPublicDns(rawUrl) {
   }
 }
 
+async function resolvesWebAppHostViaSystemDns(rawUrl) {
+  const launch = resolveWebAppLaunchUrl(rawUrl);
+  if (!launch) return false;
+  try {
+    const parsed = new URL(launch);
+    const hostname = String(parsed.hostname || "").trim();
+    if (!hostname) return false;
+    await dns.lookup(hostname);
+    return true;
+  } catch (_err) {
+    return false;
+  }
+}
+
 function spawnCloudflaredTunnelProcess(mode) {
   ensureParentDir(CLOUDFLARED_LOG_PATH);
   fs.writeFileSync(CLOUDFLARED_LOG_PATH, "", "utf8");
@@ -1576,11 +1591,15 @@ async function ensureCloudflareTunnelOnStartup() {
       await stopCloudflaredProcess(runningPid);
       clearPidFile(CLOUDFLARED_PID_PATH);
     } else {
+      const systemDnsReachable = await resolvesWebAppHostViaSystemDns(healthUrl);
+      const dnsNotice = systemDnsReachable
+        ? ""
+        : " Warning: local DNS cannot resolve BOT_WEBAPP_URL (Mini App may fail on this host).";
       return {
         ok: true,
         skipped: false,
         started: false,
-        notice: `Cloudflare tunnel active (${tunnelMode}, pid=${runningPid}).`,
+        notice: `Cloudflare tunnel active (${tunnelMode}, pid=${runningPid}).${dnsNotice}`,
       };
     }
   }
@@ -1615,11 +1634,15 @@ async function ensureCloudflareTunnelOnStartup() {
       const reachable = await isWebAppLaunchReachable(runtimeWebAppUrl);
       const dnsReachable = reachable ? true : await resolvesWebAppHostViaPublicDns(runtimeWebAppUrl);
       if (reachable || dnsReachable) {
+        const systemDnsReachable = await resolvesWebAppHostViaSystemDns(runtimeWebAppUrl);
+        const dnsNotice = systemDnsReachable
+          ? ""
+          : " Warning: local DNS cannot resolve BOT_WEBAPP_URL (Mini App may fail on this host).";
         return {
           ok: true,
           skipped: false,
           started: true,
-          notice: `Cloudflare tunnel restored (${tunnelMode}): ${runtimeWebAppUrl}`,
+          notice: `Cloudflare tunnel restored (${tunnelMode}): ${runtimeWebAppUrl}.${dnsNotice}`,
         };
       }
       await sleep(1000);
@@ -1649,11 +1672,15 @@ async function ensureCloudflareTunnelOnStartup() {
       const dnsReachable = reachable ? true : await resolvesWebAppHostViaPublicDns(nextUrl);
       if (reachable || dnsReachable) {
         setRuntimeWebAppUrl(nextUrl, true);
+        const systemDnsReachable = await resolvesWebAppHostViaSystemDns(nextUrl);
+        const dnsNotice = systemDnsReachable
+          ? ""
+          : " Warning: local DNS cannot resolve BOT_WEBAPP_URL (Mini App may fail on this host).";
         return {
           ok: true,
           skipped: false,
           started: true,
-          notice: `Cloudflare tunnel restored (${tunnelMode}): ${nextUrl}`,
+          notice: `Cloudflare tunnel restored (${tunnelMode}): ${nextUrl}.${dnsNotice}`,
         };
       }
       if (nextUrl !== lastUnreachableUrl) {
@@ -1785,6 +1812,39 @@ async function sendMessage(chatId, text, options = {}) {
     });
     return null;
   }
+}
+
+function splitTextForTelegram(text, maxChars = TELEGRAM_TEXT_CHUNK_CHARS) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+  if (normalized.length <= maxChars) return [normalized];
+
+  const chunks = [];
+  let remaining = normalized;
+  while (remaining.length > maxChars) {
+    let cut = remaining.lastIndexOf("\n\n", maxChars);
+    if (cut < Math.floor(maxChars * 0.5)) cut = remaining.lastIndexOf("\n", maxChars);
+    if (cut < Math.floor(maxChars * 0.5)) cut = remaining.lastIndexOf(" ", maxChars);
+    if (cut < Math.floor(maxChars * 0.5)) cut = maxChars;
+    const piece = remaining.slice(0, cut).trim();
+    if (piece) chunks.push(piece);
+    remaining = remaining.slice(cut).trimStart();
+  }
+  if (remaining.trim()) chunks.push(remaining.trim());
+  return chunks;
+}
+
+async function sendLongText(chatId, text, options = {}) {
+  const chunks = splitTextForTelegram(text, TELEGRAM_TEXT_CHUNK_CHARS);
+  if (!chunks.length) return null;
+
+  let last = null;
+  for (let i = 0; i < chunks.length; i += 1) {
+    const chunk = chunks[i];
+    const prefix = chunks.length > 1 ? `(Teil ${i + 1}/${chunks.length})\n` : "";
+    last = await sendMessage(chatId, `${prefix}${chunk}`, options);
+  }
+  return last;
 }
 
 function trimErrorMessage(err) {
@@ -2542,11 +2602,7 @@ function buildTurnResultTwoLiner(run) {
   const raw = String(run?.screenTextFull || run?.screenText || "");
   const assistantBlock = extractCodexAssistantBlock(raw);
   if (assistantBlock) {
-    let trimmed = assistantBlock;
-    if (trimmed.length > BOT_CHAT_ESSENTIAL_MAX_CHARS) {
-      trimmed = `${trimmed.slice(0, Math.max(0, BOT_CHAT_ESSENTIAL_MAX_CHARS - 1))}…`;
-    }
-    return trimmed;
+    return assistantBlock;
   }
   const lowerPreview = String(run?.lastInputPreview || "").toLowerCase();
   const noisePatterns = [
@@ -2560,6 +2616,12 @@ function buildTurnResultTwoLiner(run) {
     /^- \/[a-z0-9_-]+/i,
     /^(telegram terminal bot is ready|codex session (finished|cancelled|timed out))/i,
     /^[\u2500-\u257f]+$/,
+    /^\s*›\s.+$/,
+    /^\s*gpt-\d+/i,
+    /^\s*model:\s*/i,
+    /^\s*directory:\s*/i,
+    /^\s*Tip:\s*/i,
+    /^\s*\(Teil\s+\d+\/\d+\)\s*$/i,
   ];
 
   const cleaned = raw
@@ -2584,11 +2646,7 @@ function buildTurnResultTwoLiner(run) {
     return "Kein klarer Ergebnis-Text erkannt.";
   }
 
-  let essential = deduped.slice(-BOT_CHAT_ESSENTIAL_MAX_LINES).join("\n");
-  if (essential.length > BOT_CHAT_ESSENTIAL_MAX_CHARS) {
-    essential = `${essential.slice(0, Math.max(0, BOT_CHAT_ESSENTIAL_MAX_CHARS - 1))}…`;
-  }
-  return essential;
+  return deduped.join("\n");
 }
 
 function extractCodexAssistantBlock(screenText) {
@@ -3078,18 +3136,10 @@ function isCodexCommand(text) {
 }
 
 function buildCodexResponseMessage(run, isFinal = false) {
-  const summary = buildTurnResultTwoLiner(run);
-  const lines = [];
   if (!isFinal && codexTurnState(run) === "thinking ...") {
-    lines.push("thinking ...");
-    if (summary && summary !== "Kein klarer Ergebnis-Text erkannt.") {
-      lines.push("");
-      lines.push(summary);
-    }
-  } else {
-    lines.push(summary);
+    return "thinking ...";
   }
-  return escapeHtml(lines.join("\n"));
+  return "Antwort gesendet.";
 }
 
 function buildCodexSystemMessage(run, isFinal = false) {
@@ -3254,9 +3304,7 @@ async function maybeNotifyTurnDone(run) {
   run.awaitingTurnCompletion = false;
   run.turnDoneNotified = true;
   pushRunEvent(run, `turn ${run.turnIndex} considered done after ${idleMs}ms idle`);
-  if (!BOT_CHAT_CODEX_FEEDBACK) {
-    await sendMessage(run.chatId, buildTurnResultTwoLiner(run));
-  }
+  await sendLongText(run.chatId, buildTurnResultTwoLiner(run));
   if (BOT_CHAT_SEND_DONE_MARKER) {
     await sendMessage(run.chatId, "done");
   }
