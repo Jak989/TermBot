@@ -43,7 +43,9 @@ RUN set -eux; \
 RUN npm install -g @openai/codex
 
 # Install app dependencies first for better build cache usage.
+RUN mkdir -p /app/scripts
 COPY package*.json ./
+COPY scripts/fix-node-pty-perms.js ./scripts/fix-node-pty-perms.js
 RUN npm ci --omit=dev
 
 # Copy runtime sources.
