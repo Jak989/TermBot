@@ -3445,16 +3445,13 @@ function suppressCurrentReplyPrompt(run, reason) {
 function codexRuntimeCommandMessage(run) {
   const lines = [
     `Codex started (${run.sessionName}) [${CHAT_PIPELINE_VERSION}].`,
-    "Quick controls:",
-    "- text or /ask <text> -> send input",
-    "- /sh <command> or !<command> -> run shell (Smart-Mix)",
-    "- /enter | /raw <text>",
-    "- /status | /stopcodex | /panel",
-    "- /help for full command list",
+    "Kommandos:",
+    "- /stopcodex",
+    "- /livecodex (/panel)",
     `Profile auto-load: ${run.personalityStatus || "n/a"}`,
   ];
   if (BOT_ENABLE_RESTART_COMMAND) {
-    lines.splice(5, 0, "- /restartbot");
+    lines.splice(3, 0, "- /restartbot");
   }
   return lines.join("\n");
 }
@@ -3698,7 +3695,7 @@ async function cancelShellRun(reason) {
 async function startShellCommand(chatId, command) {
   ensureShell();
   if (activeRun) {
-    await sendMessage(chatId, "A session is already running. Use /status or /stopcodex.");
+    await sendMessage(chatId, "A session is already running. Use /stopcodex or /livecodex.");
     return;
   }
 
@@ -4424,7 +4421,7 @@ async function enforceCodexCancel(run, reason) {
 
 async function startCodexTmuxRun(chatId, command, options = {}) {
   if (activeRun) {
-    await sendMessage(chatId, "A session is already running. Use /status or /stopcodex.");
+    await sendMessage(chatId, "A session is already running. Use /stopcodex or /livecodex.");
     return;
   }
 
@@ -4532,23 +4529,19 @@ function startMessage() {
   const lines = [
     `Bereit. Ich bin ${assistantDisplayName()}.`,
     "",
-    "Schnellstart:",
-    "- /codexstart oder /ask <text>",
-    "- /sh <command> oder !<command> fuer Shell",
-    "- /panel, /projects, /status",
-    "- /stopcodex (oder /cancel)",
-    "- /timer, /remind, /daily, /reminders",
-    "- /voice",
+    "Verfuegbare Kommandos:",
+    "- /startcodex",
+    "- /stopcodex",
+    "- /livecodex (/panel)",
     "",
-    "Mehr Details: /help",
+    "Normaler Text geht direkt an Codex.",
     `Chat-Pipeline: ${CHAT_PIPELINE_VERSION}`,
     `CWD: ${lastKnownCwd}`,
     `Codex backend: ${BOT_CODEX_BACKEND}`,
-    `Voice: ${buildVoiceReadiness().reason}`,
     `Mini App: ${webApp.ok ? "ready" : webApp.reason}`,
   ];
   if (BOT_ENABLE_RESTART_COMMAND) {
-    lines.splice(10, 0, "- /restartbot");
+    lines.splice(6, 0, "- /restartbot");
   }
   return lines.join("\n");
 }
@@ -4557,30 +4550,18 @@ function helpMessage() {
   const webApp = getWebAppReadiness();
   const lines = [
     "Befehle:",
-    "- /start",
-    "- /setupassistant",
-    "- /codexstart",
-    "- /ask <text>",
-    "- /sh <command> (Shell, Smart-Mix)",
-    "- /panel, /panelstatus",
-    "- /projects",
-    "- /voice",
-    "- /timer <dauer> <text>",
-    "- /remind <hh:mm> <text>",
-    "- /daily <hh:mm> <text>",
-    "- /terminal <hh:mm>",
-    "- /reminders, /remindoff <id>",
-    "- /status, /pwd, /stopcodex, /cancel",
+    "- /startcodex",
+    "- /stopcodex",
+    "- /livecodex (/panel)",
     "",
     "Modi:",
-    "- Idle: normaler Text = Shell-Command",
+    "- Idle: normaler Text = neue Codex-Anfrage",
     "- Laufende Codex-Session: normaler Text = Eingabe an Codex",
-    "- Voice/Audio: wird transkribiert und wie Text verarbeitet",
     "",
     `Mini App: ${webApp.ok ? "ready" : webApp.reason}`,
   ];
   if (BOT_ENABLE_RESTART_COMMAND) {
-    lines.splice(14, 0, "- /restartbot");
+    lines.splice(4, 0, "- /restartbot");
   }
   return lines.join("\n");
 }
@@ -4605,15 +4586,11 @@ async function sendAsciiBanner(chatId) {
 
 async function sendStartCodexPrompt(chatId) {
   const webApp = getWebAppReadiness();
-  const keyboard = [
-    [{ text: "Start Codex", callback_data: "start_codex" }],
-    [{ text: "Previous Sessions", callback_data: "recent_projects" }],
-    [{ text: "Skip", callback_data: "skip_codex" }],
-  ];
+  const keyboard = [[{ text: "Startcodex", callback_data: "start_codex" }]];
   if (webApp.ok) {
-    keyboard.push([{ text: "Open Live Panel", web_app: { url: webApp.launchUrl } }]);
+    keyboard.push([{ text: "LiveCodex", web_app: { url: webApp.launchUrl } }]);
   }
-  await sendMessage(chatId, "What should I start?", {
+  await sendMessage(chatId, "Was soll losgehn?", {
     reply_markup: {
       inline_keyboard: keyboard,
     },
@@ -4624,7 +4601,7 @@ async function sendRecentProjectsPrompt(chatId) {
   if (!recentProjects.length) {
     await sendMessage(chatId, "No previous sessions found. Start a new session first.", {
       reply_markup: {
-        inline_keyboard: [[{ text: "Start Codex", callback_data: "start_codex" }]],
+        inline_keyboard: [[{ text: "Startcodex", callback_data: "start_codex" }]],
       },
     });
     return;
@@ -4724,7 +4701,7 @@ async function sendStartupFlow() {
     await sendStartCodexPrompt(startupChatId);
   }
   if (!autoStarted && forceCodexAfterRestart) {
-    await sendMessage(startupChatId, "Restart finished, but Codex could not auto-start. Use /codexstart.");
+    await sendMessage(startupChatId, "Restart finished, but Codex could not auto-start. Use /startcodex.");
   }
 
   if (BOT_STARTUP_SEND_PANEL) {
@@ -4822,6 +4799,14 @@ function isRestartCommand(text) {
   if (/^\/restartbot(?:@[a-z0-9_]+)?$/i.test(lowered)) return true;
   if (/^\/restart(?:@[a-z0-9_]+)?$/i.test(lowered)) return true;
   return false;
+}
+
+function isStartCodexCommand(text) {
+  return /^\/(?:startcodex|codexstart)(?:@[a-z0-9_]+)?$/i.test(String(text || "").trim());
+}
+
+function isLiveCodexCommand(text) {
+  return /^\/(?:livecodex|panel)(?:@[a-z0-9_]+)?$/i.test(String(text || "").trim());
 }
 
 async function handleMiniAppInput(rawText) {
@@ -4928,7 +4913,7 @@ async function handleMiniAppInput(rawText) {
       return { ok: true, action: "codex_input" };
     }
 
-    if (lowered === "/codexstart") {
+    if (isStartCodexCommand(lowered)) {
       if (BOT_CODEX_BACKEND !== "tmux") {
         finishCommandTrace(trace, "command_failed", { reason: "codex_backend_not_tmux" });
         return { ok: false, error: "codex_backend_not_tmux" };
@@ -4964,7 +4949,7 @@ async function handleMiniAppInput(rawText) {
     }
 
     finishCommandTrace(trace, "command_failed", { reason: "no_active_codex" });
-    return { ok: false, error: "no_active_codex", hint: "send /codexstart first" };
+    return { ok: false, error: "no_active_codex", hint: "send /startcodex first" };
   } catch (err) {
     finishCommandTrace(trace, "command_failed", { reason: "exception", error: trimErrorMessage(err) });
     await sendMessage(chatId, `Command failed (${trace.id}): ${trimErrorMessage(err)}`);
@@ -5035,23 +5020,9 @@ async function configureMiniAppMenuButton() {
 async function configureTelegramCommands() {
   try {
     await bot.setMyCommands([
-      { command: "start", description: "Show help and start options" },
-      { command: "help", description: "Show command reference" },
-      { command: "setupassistant", description: "Set name, tone and preferences" },
-      { command: "codexstart", description: "Start a Codex session" },
-      { command: "ask", description: "Send prompt directly to Codex" },
-      { command: "codexskip", description: "Skip auto-start prompt" },
-      { command: "panel", description: "Send mini app button" },
-      { command: "panelstatus", description: "Show mini app status" },
-      { command: "projects", description: "Show recent projects" },
-      { command: "voice", description: "Show voice transcription status" },
-      { command: "timer", description: "Start timer, e.g. /timer 25m break" },
-      { command: "remind", description: "One-time reminder, /remind 18:30 text" },
-      { command: "daily", description: "Daily reminder, /daily 09:00 text" },
-      { command: "reminders", description: "List active reminders" },
-      { command: "status", description: "Show current status" },
-      { command: "pwd", description: "Show current working directory" },
+      { command: "startcodex", description: "Start Codex" },
       { command: "stopcodex", description: "Stop active codex session" },
+      { command: "livecodex", description: "Open Codex Live panel" },
       { command: "restartbot", description: "Restart this bot process" },
     ]);
   } catch (err) {
@@ -5419,7 +5390,7 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
 
   if (normalized === "/start" || lowered === "start") {
     await sendMessage(chatId, startMessage());
-    await sendMessage(chatId, "Slack quick start: /codexstart | /ask <text> | /status | /stopcodex");
+    await sendMessage(chatId, "Slack quick start: /startcodex | /stopcodex | /livecodex");
     return;
   }
 
@@ -5428,9 +5399,9 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
     return;
   }
 
-  if (lowered === "/codexstart") {
+  if (isStartCodexCommand(lowered)) {
     if (activeRun) {
-      await sendMessage(chatId, "A session is already running. Use /status or /stopcodex.");
+      await sendMessage(chatId, "A session is already running. Use /stopcodex or /livecodex.");
       return;
     }
     if (BOT_CODEX_BACKEND === "tmux") {
@@ -5441,7 +5412,7 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
     return;
   }
 
-  if (lowered === "/panel") {
+  if (isLiveCodexCommand(lowered)) {
     await sendPanelButton(chatId);
     return;
   }
@@ -5533,7 +5504,7 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
     }
 
     if (normalized.startsWith("/")) {
-      await sendMessage(chatId, "Unknown runtime command. /status | /enter | /raw <text> | /stopcodex");
+      await sendMessage(chatId, "Unbekannter Befehl. Erlaubt: /stopcodex | /livecodex");
       return;
     }
 
@@ -5573,7 +5544,7 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
   }
 
   if (activeRun && activeRun.mode === "shell_command") {
-    await sendMessage(chatId, "A shell command is already running. Use /status or /stopcodex.");
+    await sendMessage(chatId, "A shell command is already running. Use /stopcodex.");
     return;
   }
 
@@ -5590,7 +5561,7 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
   }
 
   if (intent.type === "command") {
-    await sendMessage(chatId, "Unknown command. Use /help.");
+    await sendMessage(chatId, "Unbekannter Befehl. Nutz /startcodex, /stopcodex, /livecodex oder /restartbot.");
     return;
   }
 
@@ -5926,9 +5897,9 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  if (lowered === "/codexstart") {
+  if (isStartCodexCommand(lowered)) {
     if (activeRun) {
-      await sendMessage(chatId, "A session is already running. Use /status or /stopcodex.");
+      await sendMessage(chatId, "A session is already running. Use /stopcodex or /livecodex.");
       return;
     }
     if (BOT_CODEX_BACKEND === "tmux") {
@@ -5944,7 +5915,7 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  if (lowered === "/panel") {
+  if (isLiveCodexCommand(lowered)) {
     await sendPanelButton(chatId);
     return;
   }
@@ -6021,7 +5992,7 @@ bot.on("message", async (msg) => {
     }
 
     if (normalized.startsWith("/")) {
-      await sendMessage(chatId, "Unknown runtime command. /status | /enter | /raw <text> | /stopcodex");
+      await sendMessage(chatId, "Unbekannter Befehl. Erlaubt: /stopcodex | /livecodex");
       return;
     }
 
@@ -6066,7 +6037,7 @@ bot.on("message", async (msg) => {
   }
 
   if (activeRun && activeRun.mode === "shell_command") {
-    await sendMessage(chatId, "A shell command is already running. Use /status or /stopcodex.");
+    await sendMessage(chatId, "A shell command is already running. Use /stopcodex.");
     return;
   }
 
@@ -6083,7 +6054,7 @@ bot.on("message", async (msg) => {
   }
 
   if (intent.type === "command") {
-    await sendMessage(chatId, "Unknown command. Use /help.");
+    await sendMessage(chatId, "Unbekannter Befehl. Nutz /startcodex, /stopcodex, /livecodex oder /restartbot.");
     return;
   }
 
