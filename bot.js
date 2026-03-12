@@ -238,6 +238,7 @@ const NOTION_SYNC_ENABLED = String(process.env.NOTION_SYNC_ENABLED || "0") === "
 const NOTION_API_TOKEN = String(process.env.NOTION_API_TOKEN || "").trim();
 const NOTION_DATABASE_ID_RAW = String(process.env.NOTION_DATABASE_ID || "").trim();
 const NOTION_SYNC_MODE = String(process.env.NOTION_SYNC_MODE || "auto").trim().toLowerCase();
+const RESOLVED_CODEX_BIN = String(process.env.CODEX_BIN || "codex").trim() || "codex";
 const NOTION_SYNC_CODEX_BIN = String(process.env.NOTION_SYNC_CODEX_BIN || process.env.CODEX_BIN || "codex").trim() || "codex";
 const NOTION_SYNC_CODEX_MODEL = String(process.env.NOTION_SYNC_CODEX_MODEL || "").trim();
 const NOTION_SYNC_CODEX_TIMEOUT_MS = Number.isFinite(Number(process.env.NOTION_SYNC_CODEX_TIMEOUT_MS))
@@ -2010,6 +2011,81 @@ async function sendLongText(chatId, text, options = {}) {
 function trimErrorMessage(err) {
   const raw = String(err?.message || err || "").replace(/\s+/g, " ").trim();
   return raw.slice(0, 300) || "unknown error";
+}
+
+function codexLoginCommandHint() {
+  if (fs.existsSync("/.dockerenv")) {
+    return "docker compose exec termbot codex login --device-auth";
+  }
+  return `${RESOLVED_CODEX_BIN} login --device-auth`;
+}
+
+function codexLoginStatusCommandHint() {
+  if (fs.existsSync("/.dockerenv")) {
+    return "docker compose exec termbot codex login status";
+  }
+  return `${RESOLVED_CODEX_BIN} login status`;
+}
+
+function buildCodexLoginRequiredMessage() {
+  return [
+    "Codex ist noch nicht angemeldet.",
+    `Bitte zuerst anmelden: ${codexLoginCommandHint()}`,
+    `Danach pruefen: ${codexLoginStatusCommandHint()}`,
+    "Erst danach starte ich den Setup-Wizard und Codex-Sessions sauber.",
+  ].join("\n");
+}
+
+async function probeCodexLoginStatus() {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(RESOLVED_CODEX_BIN, ["login", "status"], {
+      cwd: RESOLVED_BOT_CWD,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.length > 4000) stdout = stdout.slice(-4000);
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 4000) stderr = stderr.slice(-4000);
+    });
+
+    child.on("error", (err) => {
+      resolve({
+        ok: false,
+        installed: false,
+        loggedIn: false,
+        detail: trimErrorMessage(err),
+      });
+    });
+
+    child.on("close", (code) => {
+      const combined = `${stdout}\n${stderr}`.trim();
+      const normalized = combined.toLowerCase();
+      const loggedIn = code === 0 && /logged in/.test(normalized);
+      resolve({
+        ok: loggedIn,
+        installed: true,
+        loggedIn,
+        detail: combined || (code === 0 ? "ok" : `exit code ${code}`),
+      });
+    });
+  });
+}
+
+async function ensureCodexLoginReady(chatId, options = {}) {
+  const result = await probeCodexLoginStatus();
+  if (result.ok) return true;
+  if (!options.silent) {
+    await sendMessage(chatId, buildCodexLoginRequiredMessage());
+  }
+  return false;
 }
 
 function createRuntimeId(prefix) {
@@ -4356,6 +4432,9 @@ async function startCodexTmuxRun(chatId, command, options = {}) {
     await sendMessage(chatId, "tmux backend is unavailable. Please check tmux installation/config.");
     return;
   }
+  if (isCodexCommand(command) && !(await ensureCodexLoginReady(chatId, { silent: false }))) {
+    return;
+  }
 
   const runCwd = resolveCwd(options.cwd || RESOLVED_BOT_CWD);
   const sessionName = makeTmuxSessionName(chatId);
@@ -4589,6 +4668,9 @@ async function maybeAutoStartCodexOnStartup(chatId, options = {}) {
     await sendMessage(chatId, "Auto-start skipped: tmux is not available.");
     return false;
   }
+  if (!(await ensureCodexLoginReady(chatId, { silent: false }))) {
+    return false;
+  }
 
   if (force) {
     await sendMessage(chatId, "Restart complete. Starting Codex automatically...");
@@ -4617,6 +4699,13 @@ async function sendStartupFlow() {
     });
   } else {
     await sendMessage(startupChatId, "Bot started on your Mac.");
+  }
+  const codexLoginReady = await ensureCodexLoginReady(startupChatId, { silent: false });
+  if (!codexLoginReady) {
+    if (BOT_STARTUP_SEND_PANEL) {
+      await sendPanelButton(startupChatId);
+    }
+    return;
   }
   if (!forceCodexAfterRestart) {
     const promptedOnboarding = await maybePromptProfileOnFirstStart(startupChatId);
@@ -5110,6 +5199,7 @@ async function handleStatus(chatId) {
 
 async function maybePromptProfileOnFirstStart(chatId) {
   if (isUserProfileComplete(userProfile)) return false;
+  if (!(await ensureCodexLoginReady(chatId, { silent: false }))) return false;
   const started = startProfileOnboarding(chatId, false);
   if (!started) return false;
   await sendMessage(
@@ -5195,6 +5285,9 @@ async function maybeHandleReminderCommands(chatId, text) {
   }
 
   if (lowered === "/setupassistant") {
+    if (!(await ensureCodexLoginReady(chatId, { silent: false }))) {
+      return true;
+    }
     startProfileOnboarding(chatId, true);
     await sendMessage(chatId, "Setup gestartet. Du kannst jederzeit mit /cancel abbrechen.");
     await sendOnboardingPrompt(chatId);

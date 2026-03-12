@@ -272,10 +272,19 @@ Mini-App nicht erreichbar:
 
 Codex startet nicht:
 
-1. `codex login` lokal pruefen
-2. `CODEX_HOME` und `CODEX_CWD` pruefen
-3. `tmux` Verfuegbarkeit pruefen
-4. `npm run bot:doctor` ausfuehren
+1. `codex login status` lokal pruefen
+2. Auf Headless-Systemen oder im Container `codex login --device-auth` nutzen
+3. Im Container: `docker compose exec termbot codex login --device-auth`
+4. Danach `docker compose exec termbot codex login status` pruefen
+5. `CODEX_HOME` und `CODEX_CWD` pruefen
+6. `tmux` Verfuegbarkeit pruefen
+7. `npm run bot:doctor` ausfuehren
+
+Warum `--device-auth`:
+
+- Der normale Browser-Login arbeitet mit einem `localhost`-Redirect.
+- Auf Servern, per SSH oder im Container landet der Redirect oft am falschen Ort oder ist gar nicht erreichbar.
+- `--device-auth` zeigt stattdessen Code plus URL, die du auf deinem normalen Browser oeffnest.
 
 ## 15. Sicherheit
 

@@ -47,7 +47,19 @@ docker compose logs -f termbot
 Wenn du kein `OPENAI_API_KEY` in `.env` nutzt:
 
 ```bash
-docker compose exec termbot codex login
+docker compose exec termbot codex login --device-auth
+```
+
+Warum `--device-auth`:
+
+- Der normale Browser-Flow benutzt einen `localhost`-Redirect.
+- Auf Headless-Systemen, per SSH oder im Container zeigt `localhost` oft auf das falsche System.
+- `--device-auth` gibt dir stattdessen Code plus URL, die du bequem auf deinem normalen Rechner oder Handy oeffnest.
+
+Login pruefen:
+
+```bash
+docker compose exec termbot codex login status
 ```
 
 Die Codex-Konfiguration bleibt persistent im Docker-Volume `codex_home`.
