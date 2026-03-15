@@ -15,6 +15,7 @@ const {
   writeJson: writeRuntimeJson,
 } = require("./scripts/lib/runtime-state");
 const { appendRuntimeEvent } = require("./scripts/lib/runtime-events");
+const { normalizeTurnOutput } = require("./scripts/lib/chat-output");
 
 dotenv.config();
 
@@ -3189,10 +3190,6 @@ function applySchenniTone(text, promptText, options = {}) {
   const prompt = normalizeComparableText(promptText);
   const simpleMode = Boolean(options.simpleMode);
   const weatherLike = /\b(wetter|temperatur|morgen|regen|wind)\b/.test(prompt);
-  const prefix = weatherLike ? "Nu pass uff: " : "Ick sach ma: ";
-  if (!/^(nu pass uff:\s|ick sach ma:\s)/i.test(value)) {
-    value = `${prefix}${value.charAt(0).toLowerCase()}${value.slice(1)}`;
-  }
   if (simpleMode && weatherLike && !/\b(jacke|schirm|mantel|regenjacke|pulli)\b/i.test(value)) {
     value = `${value}\nNimm lieber ne Jacke mit, sonst maulste spaeter.`;
   }
@@ -3206,6 +3203,12 @@ function formatTurnChatOutput(run, rawText) {
     return "Ick hab grad keene saubere Antwort rausgezogen. Schick dit bitte kurz nochmal.";
   }
   const promptText = String(run?.currentTurnPromptText || "");
+  value = normalizeTurnOutput(value, {
+    prompt: promptText,
+    maxLines: BOT_CHAT_ESSENTIAL_MAX_LINES,
+    maxChars: BOT_CHAT_ESSENTIAL_MAX_CHARS,
+  });
+  if (!value) return "";
   const simpleMode = shouldForceCompactTurnOutput(promptText, value);
   if (simpleMode) {
     value = compactTurnOutputText(value, BOT_CHAT_ESSENTIAL_MAX_LINES, BOT_CHAT_ESSENTIAL_MAX_CHARS);
