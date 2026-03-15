@@ -16,6 +16,7 @@ const {
 } = require("./scripts/lib/runtime-state");
 const { appendRuntimeEvent } = require("./scripts/lib/runtime-events");
 const { normalizeTurnOutput } = require("./scripts/lib/chat-output");
+const { applyOstdeutschLexicon } = require("./scripts/lib/schenni-style");
 
 dotenv.config();
 
@@ -3187,11 +3188,16 @@ function applySchenniTone(text, promptText, options = {}) {
     .replace(/\b[Jj]etzt\b/g, "nu")
     .replace(/\b[Vv]ielleicht\b/g, "vllt");
 
+  const technicalLike = looksLikeTechnicalPrompt(promptText);
+  if (!technicalLike) {
+    value = applyOstdeutschLexicon(value);
+  }
+
   const prompt = normalizeComparableText(promptText);
   const simpleMode = Boolean(options.simpleMode);
-  const weatherLike = /\b(wetter|temperatur|morgen|regen|wind)\b/.test(prompt);
+  const weatherLike = /\b(wetter|temperatur|regen|wind|sonnig|bewoelkt|bewolkt|grad|celsius)\b/.test(prompt);
   if (simpleMode && weatherLike && !/\b(jacke|schirm|mantel|regenjacke|pulli)\b/i.test(value)) {
-    value = `${value}\nNimm lieber ne Jacke mit, sonst maulste spaeter.`;
+    value = `${value}\nNimm lieba ne Jacke mit, sonst wirste biddschenass.`;
   }
   return value.trim();
 }
