@@ -16,7 +16,7 @@ const {
 } = require("./scripts/lib/runtime-state");
 const { appendRuntimeEvent } = require("./scripts/lib/runtime-events");
 const { normalizeTurnOutput } = require("./scripts/lib/chat-output");
-const { applyOstdeutschLexicon } = require("./scripts/lib/schenni-style");
+const { applyOstdeutschLexicon, detectDialectLevel } = require("./scripts/lib/schenni-style");
 
 dotenv.config();
 
@@ -3183,22 +3183,18 @@ function applySchenniTone(text, promptText, options = {}) {
   if (!value) return "";
   if (outputLooksLikeCode(value)) return value;
 
-  value = value
-    .replace(/\b[Nn]icht\b/g, "nich")
-    .replace(/\b[Uu]nd\b/g, "un")
-    .replace(/\b[Jj]etzt\b/g, "nu")
-    .replace(/\b[Vv]ielleicht\b/g, "vllt");
-
-  const technicalLike = looksLikeTechnicalPrompt(promptText);
-  if (!technicalLike) {
-    value = applyOstdeutschLexicon(value);
-  }
+  const simpleMode = Boolean(options.simpleMode);
+  const dialectLevel = detectDialectLevel(promptText, value, { simpleMode });
+  value = applyOstdeutschLexicon(value, dialectLevel);
 
   const prompt = normalizeComparableText(promptText);
-  const simpleMode = Boolean(options.simpleMode);
   const weatherLike = /\b(wetter|temperatur|regen|wind|sonnig|bewoelkt|bewolkt|grad|celsius)\b/.test(prompt);
   if (simpleMode && weatherLike && !/\b(jacke|schirm|mantel|regenjacke|pulli)\b/i.test(value)) {
-    value = `${value}\nNimm lieba ne Jacke mit, sonst wirste biddschenass.`;
+    if (dialectLevel === "voll") {
+      value = `${value}\nNimm lieba ne Jacke mit, sonst wirste biddschenass.`;
+    } else if (dialectLevel === "mittel") {
+      value = `${value}\nNimm lieber 'ne Jacke mit, sonst wird's nass.`;
+    }
   }
   return value.trim();
 }
