@@ -1,11 +1,11 @@
-# TermBot Container Deploy (Server)
+# TermBot Container Deployment (Server)
 
-## 1) Voraussetzungen
+## 1) Prerequisites
 
-- Docker Engine + Docker Compose Plugin
-- Offener TCP-Port `8787` (falls Mini-App extern erreichbar sein soll)
+- Docker Engine + Docker Compose plugin
+- Open TCP port `8787` (only if Mini App should be reachable externally)
 
-## 2) Projekt holen
+## 2) Clone the Project
 
 ```bash
 git clone <REPO_URL>
@@ -13,14 +13,14 @@ cd TermBot
 cp .env.example .env
 ```
 
-## 3) `.env` setzen (Pflicht)
+## 3) Configure `.env` (Required)
 
-Mindestens:
+Minimum:
 
 - `TELEGRAM_BOT_TOKEN=...`
 - `TELEGRAM_ALLOWED_USER_ID=...`
 
-Empfohlen:
+Recommended:
 
 - `BOT_CODEX_BACKEND=tmux`
 - `BOT_ENABLE_RESTART_COMMAND=1`
@@ -31,10 +31,10 @@ Empfohlen:
 
 Optional:
 
-- `OPENAI_API_KEY=...` (falls Codex ohne interaktiven Login laufen soll)
-- `BOT_WEBAPP_URL=https://...` (eigene Domain/Reverse Proxy)
+- `OPENAI_API_KEY=...` (if you want non-interactive Codex auth)
+- `BOT_WEBAPP_URL=https://...` (custom domain / reverse proxy)
 
-## 4) Container starten
+## 4) Start the Container
 
 ```bash
 docker compose up -d --build
@@ -42,37 +42,37 @@ docker compose ps
 docker compose logs -f termbot
 ```
 
-## 5) Codex im Container aktivieren
+## 5) Enable Codex in the Container
 
-Wenn du kein `OPENAI_API_KEY` in `.env` nutzt:
+If you do not use `OPENAI_API_KEY` in `.env`:
 
 ```bash
 docker compose exec termbot codex login --device-auth
 ```
 
-Warum `--device-auth`:
+Why `--device-auth`:
 
-- Der normale Browser-Flow benutzt einen `localhost`-Redirect.
-- Auf Headless-Systemen, per SSH oder im Container zeigt `localhost` oft auf das falsche System.
-- `--device-auth` gibt dir stattdessen Code plus URL, die du bequem auf deinem normalen Rechner oder Handy oeffnest.
+- Browser login relies on a `localhost` redirect.
+- On headless systems, over SSH, or inside containers, that redirect is often unreachable or wrong.
+- Device auth gives you a code + URL that you complete on your normal browser (desktop/phone).
 
-Login pruefen:
+Verify login:
 
 ```bash
 docker compose exec termbot codex login status
 ```
 
-Die Codex-Konfiguration bleibt persistent im Docker-Volume `codex_home`.
+Codex auth state persists in the Docker volume `codex_home`.
 
 ## 6) Health / Troubleshooting
 
-Mini-App lokal im Container:
+Check Mini App endpoint inside the container:
 
 ```bash
 docker compose exec termbot curl -fsS http://127.0.0.1:8787/telegram-miniapp/index.html | head
 ```
 
-Restart testen:
+Restart flow test:
 
-- Telegram: `/restartbot`
-- Erwartung: Bot startet neu und startet Codex automatisch
+- Telegram command: `/restartbot`
+- Expected result: bot restarts and auto-starts Codex
