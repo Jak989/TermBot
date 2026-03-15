@@ -12,6 +12,19 @@ function isPrefixOnlyLine(line) {
   return /^(kurzfassung|zusammenfassung)\s*:?\s*$/i.test(value) || /^(i(?:ck|ch)\s+sach\s+ma|nu\s+pass\s+uff)\s*:?\s*$/i.test(value);
 }
 
+function isPersonalityLeakLine(line) {
+  const value = String(line || "").trim();
+  if (!value) return false;
+  return (
+    /^#{1,6}\s*[a-d]\)\s*(pers[oö]nlicher assistent|projektmanager|developer|testing[- ]ingenieur)\b/i.test(value) ||
+    /^(aufgabe|verhalten|output[- ]format|engineering[- ]regeln|test[- ]mindeststandard)\s*:?\s*$/i.test(value) ||
+    /^(kritische systeme\/services kurz verifizieren|waehrend der arbeit|aenderungen in kleinen, nachvollziehbaren schritten|vor riskanten aenderungen:\s*backup\/checkpoint)\b/i.test(
+      value
+    ) ||
+    /^(<!--\s*bot_profile_(start|end)\s*-->)$/i.test(value)
+  );
+}
+
 function stripForcedLeadPrefix(text) {
   let value = String(text || "").trim();
   for (let i = 0; i < 6; i += 1) {
@@ -74,14 +87,26 @@ function normalizeTurnOutput(rawOutput, options = {}) {
   const lines = source.split("\n").map((line) => String(line || "").replace(/\s+$/g, ""));
   const cleaned = [];
   let firstContentHandled = false;
+  let droppingTemplateBlock = false;
 
   for (const rawLine of lines) {
     let line = String(rawLine || "");
     if (!line.trim()) {
       cleaned.push("");
+      droppingTemplateBlock = false;
       continue;
     }
 
+    if (isPersonalityLeakLine(line)) {
+      droppingTemplateBlock = true;
+      continue;
+    }
+    if (droppingTemplateBlock) {
+      if (/^[-*]\s+/.test(line) || /^(aufgabe|verhalten|output[- ]format|engineering[- ]regeln|test[- ]mindeststandard)\s*:?\s*$/i.test(line.trim())) {
+        continue;
+      }
+      droppingTemplateBlock = false;
+    }
     if (isPrefixOnlyLine(line)) continue;
     if (!firstContentHandled) {
       line = stripForcedLeadPrefix(line);

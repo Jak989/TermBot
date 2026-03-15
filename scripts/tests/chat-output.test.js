@@ -41,3 +41,17 @@ test("nested forced prefixes are removed from first content line", () => {
   const out = normalizeTurnOutput(raw, { prompt, maxLines: 4, maxChars: 220 });
   assert.equal(out, "passt, wird erledigt.");
 });
+
+test("personality template leak lines are stripped completely", () => {
+  const prompt = "muenchen";
+  const raw = ["### B) Projektmanager", "Aufgabe:", "- Plant Projekte in Meilensteine."].join("\n");
+  const out = normalizeTurnOutput(raw, { prompt, maxLines: 4, maxChars: 220 });
+  assert.equal(out, "");
+});
+
+test("legitimate project manager sentence is preserved", () => {
+  const prompt = "was macht ein projektmanager";
+  const raw = "Ein Projektmanager plant Projekte, priorisiert Aufgaben und steuert Risiken.";
+  const out = normalizeTurnOutput(raw, { prompt, maxLines: 4, maxChars: 220 });
+  assert.equal(out, raw);
+});
