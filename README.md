@@ -31,14 +31,39 @@ Du chattest normal weiter, und TermBot arbeitet die Aufgaben in der laufenden Se
 
 Mit `/setupassistant` konfigurierst du:
 
+- Persona-Preset: `schenni` oder `custom`
 - deinen Namen
 - den Namen des Assistants
 - Kommunikationsstil (formal/leger/custom)
 - eigene Preferences
 
-TermBot speichert das lokal in `data/user-profile.json` und synchronisiert den Profilblock in `V3_PERSONALITY.md`.
+TermBot speichert das lokal in `data/user-profile.json` und synchronisiert den Profilblock je nach Setup:
+
+- Preset aktiv: in `personality-presets/<preset>/profile.md`
+- Kein Preset: in `V3_PERSONALITY.md`
 Bei neuen Codex-Sessions wird dieses Profil automatisch als Verhalten geladen (konfigurierbar ueber `BOT_PERSONALITY_AUTO_APPLY`).
 Optional lernt TermBot zusaetzliche Praeferenz-Hinweise aus deinem Chat mit (`BOT_PREFERENCE_LEARNING=1`) und nutzt sie in neuen Sessions.
+
+Wenn ein Preset aktiv ist, nutzt TermBot die mehrteilige Persona-Struktur unter:
+
+- `personality-presets/schenni/profile.md`
+- `personality-presets/schenni/answer-style.md`
+- `personality-presets/schenni/lexicon.md`
+- `personality-presets/custom/profile.md`
+- `personality-presets/custom/answer-style.md`
+- `personality-presets/custom/lexicon.md`
+
+Optionale weitere Presets:
+
+- `personality-presets/no-bs-engineer/*`
+- `personality-presets/witty-coach/*`
+- `personality-presets/stoiber-style/*` (inspiriert)
+- `personality-presets/showman-en/*` (inspiriert, Englisch)
+
+Preset-Wechsel im laufenden Betrieb:
+
+- `/persona` oder `/persona list` zeigt alle verfuegbaren Presets
+- `/persona <preset>` schaltet sofort um (z.B. `/persona schenni`, `/persona showman-en`)
 
 ## Feature Matrix
 
@@ -58,6 +83,7 @@ Optional lernt TermBot zusaetzliche Praeferenz-Hinweise aus deinem Chat mit (`BO
 
 - `/start` Hilfe und Startpanel
 - `/setupassistant` Assistant-Profil einrichten
+- `/persona` Persona-Preset anzeigen/wechseln
 - `/codexstart` Codex-Session starten
 - `/ask <text>` Prompt direkt an Codex
 - `/sh <command>` Shell-Command explizit ausfuehren (Smart-Mix)
@@ -68,6 +94,39 @@ Optional lernt TermBot zusaetzliche Praeferenz-Hinweise aus deinem Chat mit (`BO
 - `/timer`, `/remind`, `/daily`, `/terminal`, `/reminders`, `/remindoff`
 
 ## Quick Start
+
+### Voraussetzung: Codex CLI im Terminal
+
+TermBot startet nur dann sinnvoll im Assistant-Modus, wenn `codex` auf deinem Rechner installiert ist und im PATH liegt.
+
+macOS (Homebrew):
+
+```bash
+brew install --cask codex
+codex --version
+codex login
+```
+
+Headless/Remote-Systeme:
+
+```bash
+codex login --device-auth
+```
+
+Der normale Browser-Flow mit `codex login` ist auf Servern oft unpraktisch, weil `localhost` im Container oder auf der Remote-Maschine endet. Fuer Server, SSH-Sessions und Container ist `--device-auth` der verlässlichere Weg.
+
+Pruefen:
+
+```bash
+which codex
+codex --help
+```
+
+Wenn `codex` nicht gefunden wird, setze in `.env` explizit den Pfad:
+
+```bash
+CODEX_BIN=/voller/pfad/zu/codex
+```
 
 ```bash
 npm install
@@ -178,7 +237,8 @@ Container bringt mit:
 Wichtig fuer Codex im Container:
 
 - `CODEX_HOME` ist auf Volume `codex_home` gelegt (persistente Auth/Profile)
-- Falls noetig im Container einmalig einloggen: `docker compose exec termbot codex login`
+- Auf Headless-Systemen im Container einmalig einloggen: `docker compose exec termbot codex login --device-auth`
+- Danach Login pruefen: `docker compose exec termbot codex login status`
 
 ## Sicherheit
 

@@ -15,6 +15,7 @@ const {
   writeJson: writeRuntimeJson,
 } = require("./scripts/lib/runtime-state");
 const { appendRuntimeEvent } = require("./scripts/lib/runtime-events");
+const { normalizeTurnOutput } = require("./scripts/lib/chat-output");
 
 dotenv.config();
 
@@ -204,6 +205,7 @@ const RECENT_PROJECTS_PATH = path.join(__dirname, "data", "recent-projects.json"
 const USER_PROFILE_PATH = path.join(__dirname, "data", "user-profile.json");
 const USER_PREFERENCE_HINTS_PATH = path.join(__dirname, "data", "user-preference-hints.json");
 const REMINDERS_PATH = path.join(__dirname, "data", "reminders.json");
+const PERSONALITY_PRESETS_DIR = path.join(__dirname, "personality-presets");
 const MAX_RECENT_PROJECTS = 12;
 const MAX_REMINDER_TEXT_CHARS = 280;
 const MAX_REMINDERS = 200;
@@ -235,6 +237,7 @@ const NOTION_SYNC_ENABLED = String(process.env.NOTION_SYNC_ENABLED || "0") === "
 const NOTION_API_TOKEN = String(process.env.NOTION_API_TOKEN || "").trim();
 const NOTION_DATABASE_ID_RAW = String(process.env.NOTION_DATABASE_ID || "").trim();
 const NOTION_SYNC_MODE = String(process.env.NOTION_SYNC_MODE || "auto").trim().toLowerCase();
+const RESOLVED_CODEX_BIN = String(process.env.CODEX_BIN || "codex").trim() || "codex";
 const NOTION_SYNC_CODEX_BIN = String(process.env.NOTION_SYNC_CODEX_BIN || process.env.CODEX_BIN || "codex").trim() || "codex";
 const NOTION_SYNC_CODEX_MODEL = String(process.env.NOTION_SYNC_CODEX_MODEL || "").trim();
 const NOTION_SYNC_CODEX_TIMEOUT_MS = Number.isFinite(Number(process.env.NOTION_SYNC_CODEX_TIMEOUT_MS))
@@ -927,10 +930,328 @@ function defaultUserProfile() {
     assistantName: "",
     tone: "",
     preferences: "",
+    personaPreset: "",
     configuredAt: "",
     setupCompleted: false,
     schemaVersion: 1,
   };
+}
+
+const PERSONA_PRESET_DEFINITIONS = [
+  {
+    key: "schenni",
+    label: "Schenni",
+    summary: "Frech-keck, leicht ostdeutsch, standardmaessig kurz.",
+    aliases: ["schenni", "ostdeutsch", "ost", "katze"],
+  },
+  {
+    key: "custom",
+    label: "Custom",
+    summary: "Eigene Persoenlichkeit mit deinem Stil.",
+    aliases: ["custom", "eigene", "selber", "self", "own"],
+  },
+  {
+    key: "no-bs-engineer",
+    label: "No-BS Engineer",
+    summary: "Technisch, klar, direkt, ohne Floskeln.",
+    aliases: ["no-bs", "nobs", "engineer", "tech"],
+  },
+  {
+    key: "witty-coach",
+    label: "Witty Coach",
+    summary: "Locker, motivierend, aber konkret.",
+    aliases: ["coach", "witty", "mentor"],
+  },
+  {
+    key: "stoiber-style",
+    label: "Stoiber-Style (inspiriert)",
+    summary: "Politisch-satirischer DE-Ton, nicht 1:1 Imitation.",
+    aliases: ["stoiber", "edmund-stoiber", "bayern", "bavarian"],
+  },
+  {
+    key: "showman-en",
+    label: "Showman EN (inspiriert)",
+    summary: "Show-lastiger englischer Ton, nicht 1:1 Imitation.",
+    aliases: ["showman", "trump", "donald-trump", "english-showman", "en-showman"],
+  },
+];
+
+const PERSONA_PRESET_BY_KEY = new Map(PERSONA_PRESET_DEFINITIONS.map((entry) => [entry.key, entry]));
+const PERSONA_PRESET_ALIAS = (() => {
+  const next = new Map();
+  for (const entry of PERSONA_PRESET_DEFINITIONS) {
+    next.set(entry.key, entry.key);
+    for (const alias of entry.aliases || []) {
+      next.set(String(alias).toLowerCase(), entry.key);
+    }
+  }
+  return next;
+})();
+
+function personaPresetLabel(value) {
+  const normalized = normalizePersonaPreset(value);
+  if (!normalized) return "-";
+  return PERSONA_PRESET_BY_KEY.get(normalized)?.label || normalized;
+}
+
+function availablePersonaPresetKeys() {
+  return PERSONA_PRESET_DEFINITIONS.map((entry) => entry.key);
+}
+
+function normalizePersonaPreset(value) {
+  const lowered = String(value || "").trim().toLowerCase();
+  if (!lowered) return "";
+  const normalized = lowered
+    .replace(/[`"'.,;:!?()[\]{}]/g, " ")
+    .replace(/[\s_]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  if (!normalized) return "";
+  if (PERSONA_PRESET_BY_KEY.has(normalized)) return normalized;
+  if (PERSONA_PRESET_ALIAS.has(normalized)) return PERSONA_PRESET_ALIAS.get(normalized) || "";
+  return "";
+}
+
+function personaPresetDir(preset) {
+  const normalized = normalizePersonaPreset(preset);
+  if (!normalized) return "";
+  return path.join(PERSONALITY_PRESETS_DIR, normalized);
+}
+
+function defaultPresetFileContent(preset, filename) {
+  const normalized = normalizePersonaPreset(preset);
+  if (normalized === "schenni") {
+    if (filename === "profile.md") {
+      return [
+        "# Schenni Personality Profile",
+        "",
+        "Schenni ist frech, direkt und leicht ostdeutsch gefaerbt.",
+        "Fakten bleiben korrekt, Ton bleibt locker und hilfreich.",
+        "",
+      ].join("\n");
+    }
+    if (filename === "answer-style.md") {
+      return [
+        "# Answer Style",
+        "",
+        "- Kurz und knackig als Standard.",
+        "- Bei komplexen Themen: laenger erlaubt, aber kompakt und klar.",
+        "- Nicht mit Floskeln starten, direkt zum Punkt.",
+        "- Sprachregel: Deutsch-Input => voller Schenni-Ton.",
+        "- Sprachregel: Englisch-Input => Englisch antworten, Schenni nur leicht dosieren.",
+        "",
+      ].join("\n");
+    }
+    if (filename === "lexicon.md") {
+      return [
+        "# Lexicon",
+        "",
+        "- nuescht = nichts",
+        "- nue glar = ja",
+        "- niet = nein",
+        "- Bemme = belegtes Brot",
+        "- Datsche = Gartenhaus",
+        "",
+      ].join("\n");
+    }
+  }
+  if (normalized === "custom") {
+    if (filename === "profile.md") {
+      return [
+        "# Custom Personality Profile",
+        "",
+        "Hier steht deine eigene Persona-Basis.",
+        "Der Setup-Wizard schreibt deinen Profilblock automatisch dazu.",
+        "",
+      ].join("\n");
+    }
+    if (filename === "answer-style.md") {
+      return [
+        "# Answer Style",
+        "",
+        "- Default: klar, knapp, ohne unnötigen Overhead.",
+        "- Darf bei komplexen Aufgaben laenger werden, bleibt aber strukturiert.",
+        "",
+      ].join("\n");
+    }
+    if (filename === "lexicon.md") {
+      return [
+        "# Lexicon",
+        "",
+        "- Trage hier bevorzugte Begriffe und Formulierungen ein.",
+        "",
+      ].join("\n");
+    }
+  }
+  if (normalized === "no-bs-engineer") {
+    if (filename === "profile.md") {
+      return [
+        "# No-BS Engineer Profile",
+        "",
+        "Antwortet technisch, praezise und ohne Drumherum.",
+        "Nutzt klare Annahmen, Trade-offs und naechste Schritte.",
+        "",
+      ].join("\n");
+    }
+    if (filename === "answer-style.md") {
+      return [
+        "# Answer Style",
+        "",
+        "- Ergebnis zuerst, dann Belege oder Schritte.",
+        "- Kurz bei einfachen Fragen, strukturiert bei komplexen Themen.",
+        "- Keine motivierenden Phrasen, nur verwertbare Aussagen.",
+        "",
+      ].join("\n");
+    }
+    if (filename === "lexicon.md") {
+      return [
+        "# Lexicon",
+        "",
+        "- default: reproducible, deterministic, regression-safe",
+        "- de: belastbar, reproduzierbar, robust",
+        "",
+      ].join("\n");
+    }
+  }
+  if (normalized === "witty-coach") {
+    if (filename === "profile.md") {
+      return [
+        "# Witty Coach Profile",
+        "",
+        "Locker, freundlich, etwas Humor, aber immer zielorientiert.",
+        "Hilft beim Umsetzen statt nur zu motivieren.",
+        "",
+      ].join("\n");
+    }
+    if (filename === "answer-style.md") {
+      return [
+        "# Answer Style",
+        "",
+        "- Kurz, positiv, konkret.",
+        "- Humor leicht einsetzen, nicht albern werden.",
+        "- Immer 1-3 klare naechste Schritte anbieten.",
+        "",
+      ].join("\n");
+    }
+    if (filename === "lexicon.md") {
+      return [
+        "# Lexicon",
+        "",
+        "- fokus, momentum, naechster schritt, pragmatisch",
+        "",
+      ].join("\n");
+    }
+  }
+  if (normalized === "stoiber-style") {
+    if (filename === "profile.md") {
+      return [
+        "# Stoiber-Style (Inspired) Profile",
+        "",
+        "Satirisch-politischer deutscher Ton mit langen Schleifen als Stilmittel.",
+        "Nur inspiriert, keine 1:1 Nachahmung realer Personen.",
+        "",
+      ].join("\n");
+    }
+    if (filename === "answer-style.md") {
+      return [
+        "# Answer Style",
+        "",
+        "- Deutsch antworten, mit leicht satirischem Buehnencharakter.",
+        "- Kernaussage trotzdem klar und am Anfang.",
+        "- Bei komplexen Themen strukturieren, nicht in Endlossaetzen verlieren.",
+        "",
+      ].join("\n");
+    }
+    if (filename === "lexicon.md") {
+      return [
+        "# Lexicon",
+        "",
+        "- meine damen und herren, nu pass uff, ganz klar",
+        "",
+      ].join("\n");
+    }
+  }
+  if (normalized === "showman-en") {
+    if (filename === "profile.md") {
+      return [
+        "# Showman EN (Inspired) Profile",
+        "",
+        "English-first, high-energy, show style for punchy delivery.",
+        "Inspired tone only, not a real-person imitation.",
+        "",
+      ].join("\n");
+    }
+    if (filename === "answer-style.md") {
+      return [
+        "# Answer Style",
+        "",
+        "- English by default.",
+        "- Strong claims only when backed by facts.",
+        "- Keep it punchy, then give concrete action.",
+        "",
+      ].join("\n");
+    }
+    if (filename === "lexicon.md") {
+      return [
+        "# Lexicon",
+        "",
+        "- big picture, clear win, straight answer, next move",
+        "",
+      ].join("\n");
+    }
+  }
+  return "# Personality\n";
+}
+
+function ensurePersonaPresetFiles(preset) {
+  const dir = personaPresetDir(preset);
+  if (!dir) return { ok: false, error: "invalid preset", path: "" };
+  const files = ["profile.md", "answer-style.md", "lexicon.md"];
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    for (const file of files) {
+      const target = path.join(dir, file);
+      if (!fs.existsSync(target)) {
+        fs.writeFileSync(target, defaultPresetFileContent(preset, file), "utf8");
+      }
+    }
+    return { ok: true, path: dir };
+  } catch (err) {
+    return { ok: false, error: err.message, path: dir };
+  }
+}
+
+function readPersonaPresetText(preset) {
+  const normalized = normalizePersonaPreset(preset);
+  if (!normalized) return { ok: false, status: "invalid", detail: "invalid preset", path: "" };
+  const ensured = ensurePersonaPresetFiles(normalized);
+  if (!ensured.ok) {
+    return {
+      ok: false,
+      status: "error",
+      detail: `preset init failed: ${ensured.error || "unknown error"}`,
+      path: ensured.path || "",
+    };
+  }
+  const dir = ensured.path;
+  const files = ["profile.md", "answer-style.md", "lexicon.md"];
+  try {
+    const parts = [];
+    for (const file of files) {
+      const full = path.join(dir, file);
+      if (!fs.existsSync(full)) continue;
+      const raw = fs.readFileSync(full, "utf8").trim();
+      if (!raw) continue;
+      parts.push(raw);
+    }
+    const text = parts.join("\n\n");
+    if (!text.trim()) {
+      return { ok: false, status: "empty", detail: `preset files are empty: ${dir}`, path: dir };
+    }
+    return { ok: true, status: "ok", detail: "ok", path: dir, text };
+  } catch (err) {
+    return { ok: false, status: "error", detail: `preset read failed: ${err.message}`, path: dir };
+  }
 }
 
 function readUserProfile() {
@@ -945,6 +1266,7 @@ function readUserProfile() {
       assistantName: String(parsed.assistantName || "").trim(),
       tone: String(parsed.tone || "").trim(),
       preferences: String(parsed.preferences || "").trim(),
+      personaPreset: normalizePersonaPreset(parsed.personaPreset || ""),
       configuredAt: String(parsed.configuredAt || "").trim(),
       setupCompleted: Boolean(parsed.setupCompleted),
     };
@@ -962,6 +1284,7 @@ function writeUserProfile(profile) {
     assistantName: String(profile?.assistantName || "").trim(),
     tone: String(profile?.tone || "").trim(),
     preferences: String(profile?.preferences || "").trim(),
+    personaPreset: normalizePersonaPreset(profile?.personaPreset || ""),
     configuredAt: String(profile?.configuredAt || "").trim(),
     setupCompleted: Boolean(profile?.setupCompleted),
   };
@@ -1011,14 +1334,20 @@ function renderProfilePersonalitySection(profile) {
 }
 
 function upsertUserProfileIntoPersonality(profile) {
-  const profilePath = resolvePersonalityFilePath(BOT_PERSONALITY_FILE);
+  const preset = normalizePersonaPreset(profile?.personaPreset || "");
+  const profilePath = preset
+    ? path.join(personaPresetDir(preset), "profile.md")
+    : resolvePersonalityFilePath(BOT_PERSONALITY_FILE);
   const nextSection = renderProfilePersonalitySection(profile);
   try {
     let raw = "";
+    if (preset) {
+      ensurePersonaPresetFiles(preset);
+    }
     if (fs.existsSync(profilePath)) {
       raw = fs.readFileSync(profilePath, "utf8");
     } else {
-      raw = "# V3 Persönlichkeits- und Rollenprofil\n";
+      raw = preset ? defaultPresetFileContent(preset, "profile.md") : "# V3 Persönlichkeits- und Rollenprofil\n";
     }
 
     const markerPattern = new RegExp(
@@ -1361,6 +1690,30 @@ function resolvePersonalityFilePath(filePath) {
 }
 
 function readPersonalityProfile() {
+  const preset = normalizePersonaPreset(userProfile?.personaPreset || "");
+  if (preset) {
+    const fromPreset = readPersonaPresetText(preset);
+    if (!fromPreset.ok) {
+      return {
+        ok: false,
+        path: fromPreset.path || "",
+        status: fromPreset.status || "error",
+        detail: fromPreset.detail || "preset read failed",
+      };
+    }
+    const raw = fromPreset.text.trim();
+    const truncated = raw.length > BOT_PERSONALITY_MAX_CHARS;
+    const text = truncated ? `${raw.slice(0, BOT_PERSONALITY_MAX_CHARS)}\n\n...[truncated by BOT_PERSONALITY_MAX_CHARS]` : raw;
+    return {
+      ok: true,
+      path: fromPreset.path,
+      text,
+      truncated,
+      originalChars: raw.length,
+      loadedChars: text.length,
+    };
+  }
+
   const profilePath = resolvePersonalityFilePath(BOT_PERSONALITY_FILE);
   try {
     if (!fs.existsSync(profilePath)) {
@@ -1996,6 +2349,81 @@ function trimErrorMessage(err) {
   return raw.slice(0, 300) || "unknown error";
 }
 
+function codexLoginCommandHint() {
+  if (fs.existsSync("/.dockerenv")) {
+    return "docker compose exec termbot codex login --device-auth";
+  }
+  return `${RESOLVED_CODEX_BIN} login --device-auth`;
+}
+
+function codexLoginStatusCommandHint() {
+  if (fs.existsSync("/.dockerenv")) {
+    return "docker compose exec termbot codex login status";
+  }
+  return `${RESOLVED_CODEX_BIN} login status`;
+}
+
+function buildCodexLoginRequiredMessage() {
+  return [
+    "Codex ist noch nicht angemeldet.",
+    `Bitte zuerst anmelden: ${codexLoginCommandHint()}`,
+    `Danach pruefen: ${codexLoginStatusCommandHint()}`,
+    "Erst danach starte ich den Setup-Wizard und Codex-Sessions sauber.",
+  ].join("\n");
+}
+
+async function probeCodexLoginStatus() {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(RESOLVED_CODEX_BIN, ["login", "status"], {
+      cwd: RESOLVED_BOT_CWD,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.length > 4000) stdout = stdout.slice(-4000);
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 4000) stderr = stderr.slice(-4000);
+    });
+
+    child.on("error", (err) => {
+      resolve({
+        ok: false,
+        installed: false,
+        loggedIn: false,
+        detail: trimErrorMessage(err),
+      });
+    });
+
+    child.on("close", (code) => {
+      const combined = `${stdout}\n${stderr}`.trim();
+      const normalized = combined.toLowerCase();
+      const loggedIn = code === 0 && /logged in/.test(normalized);
+      resolve({
+        ok: loggedIn,
+        installed: true,
+        loggedIn,
+        detail: combined || (code === 0 ? "ok" : `exit code ${code}`),
+      });
+    });
+  });
+}
+
+async function ensureCodexLoginReady(chatId, options = {}) {
+  const result = await probeCodexLoginStatus();
+  if (result.ok) return true;
+  if (!options.silent) {
+    await sendMessage(chatId, buildCodexLoginRequiredMessage());
+  }
+  return false;
+}
+
 function createRuntimeId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -2362,8 +2790,9 @@ function startProfileOnboarding(chatId, force = false) {
   if (!force && isUserProfileComplete(userProfile)) return false;
   onboardingState = {
     chatId,
-    step: "owner_name",
+    step: "persona_preset",
     draft: {
+      personaPreset: force ? "" : normalizePersonaPreset(userProfile.personaPreset || ""),
       ownerName: force ? "" : userProfile.ownerName || "",
       assistantName: force ? "" : userProfile.assistantName || "",
       tone: force ? "" : userProfile.tone || "",
@@ -2376,6 +2805,13 @@ function startProfileOnboarding(chatId, force = false) {
 
 async function sendOnboardingPrompt(chatId) {
   if (!onboardingState || onboardingState.chatId !== chatId) return;
+  if (onboardingState.step === "persona_preset") {
+    await sendMessage(
+      chatId,
+      "Waehle dein Persona-Setup: `schenni` (Preset) oder `custom` (eigene Persoenlichkeit)."
+    );
+    return;
+  }
   if (onboardingState.step === "owner_name") {
     await sendMessage(chatId, "Bevor wir starten: Wie heißt du? (z.B. Alex)");
     return;
@@ -2400,21 +2836,24 @@ async function sendOnboardingPrompt(chatId) {
 
 async function completeOnboarding(chatId) {
   if (!onboardingState || onboardingState.chatId !== chatId) return;
+  const chosenPreset = normalizePersonaPreset(onboardingState.draft.personaPreset || "") || "custom";
   userProfile = {
     ...userProfile,
     ownerName: onboardingState.draft.ownerName || userProfile.ownerName || "",
     assistantName: onboardingState.draft.assistantName || userProfile.assistantName || "",
     tone: onboardingState.draft.tone || userProfile.tone || "custom",
     preferences: onboardingState.draft.preferences || userProfile.preferences || "",
+    personaPreset: chosenPreset,
     configuredAt: new Date().toISOString(),
     setupCompleted: true,
   };
   onboardingState = null;
   const syncResult = applyUserProfileToPersonality();
   const syncInfo = syncResult.ok ? "in die Persönlichkeit gespeichert" : "lokal gespeichert (Persönlichkeitsdatei konnte nicht aktualisiert werden)";
+  const presetLabel = personaPresetLabel(chosenPreset);
   await sendMessage(
     chatId,
-    `Danke ${profileDisplayName()}. Ich heiße jetzt ${assistantDisplayName()} und kommuniziere ${toneLabel(userProfile.tone)}. Einstellungen wurden ${syncInfo}.`
+    `Danke ${profileDisplayName()}. Aktiv: ${presetLabel}. Ich heiße jetzt ${assistantDisplayName()} und kommuniziere ${toneLabel(userProfile.tone)}. Einstellungen wurden ${syncInfo}.`
   );
 }
 
@@ -2434,8 +2873,35 @@ async function maybeHandleOnboardingReply(chatId, text) {
     return true;
   }
 
+  if (onboardingState.step === "persona_preset") {
+    const preset = normalizePersonaPreset(normalized);
+    if (!preset || (preset !== "schenni" && preset !== "custom")) {
+      await sendMessage(chatId, "Bitte antworte mit `schenni` oder `custom`.");
+      return true;
+    }
+    onboardingState.draft.personaPreset = preset;
+    if (preset === "schenni") {
+      onboardingState.step = "owner_name";
+      await sendMessage(chatId, "Schenni ist aktiv. Wir brauchen nur deinen Namen, den Rest setze ich aus dem Preset.");
+      await sendOnboardingPrompt(chatId);
+      return true;
+    }
+    onboardingState.step = "owner_name";
+    await sendMessage(chatId, "Custom ist aktiv. Wir bauen jetzt deine eigene Persoenlichkeit.");
+    await sendOnboardingPrompt(chatId);
+    return true;
+  }
+
   if (onboardingState.step === "owner_name") {
     onboardingState.draft.ownerName = normalized.slice(0, 80);
+    if (onboardingState.draft.personaPreset === "schenni") {
+      onboardingState.draft.assistantName = "Schenni";
+      onboardingState.draft.tone = "leger";
+      onboardingState.draft.preferences =
+        "Kurz, keck und ostdeutsch. Bei komplexen Themen kompakt und strukturiert.";
+      await completeOnboarding(chatId);
+      return true;
+    }
     onboardingState.step = "assistant_name";
     await sendOnboardingPrompt(chatId);
     return true;
@@ -2823,6 +3289,10 @@ function isCodexUiNoiseLine(line, options = {}) {
     /^searched$/i,
     /^searched\s+/i,
     /^profile source:\s*/i,
+    /^#{1,6}\s*[a-d]\)\s*(pers[oö]nlicher assistent|projektmanager|developer|testing[- ]ingenieur)\b/i,
+    /^(aufgabe|verhalten|output[- ]format|engineering[- ]regeln|test[- ]mindeststandard)\s*:?\s*$/i,
+    /^(kritische systeme\/services kurz verifizieren|waehrend der arbeit|aenderungen in kleinen, nachvollziehbaren schritten|vor riskanten aenderungen:\s*backup\/checkpoint)\b/i,
+    /^##\s*(rollenmodell|entscheidungsprinzipien|kommunikationsmodus|v3 start-checkliste)\b/i,
     /^use the following operating profile/i,
     /^\[profile_(start|end)\]/i,
     /^openai codex\s*\(v/i,
@@ -2957,15 +3427,21 @@ function hasTurnOutputCandidate(run) {
   if (run?.currentTurnSuppressOutput) return true;
   const primary = cleanTurnOutputLines(extractTurnSegmentFromPrompt(run), run);
   if (primary.length) return true;
+  const baselineComparable = new Set(
+    splitScreenLines(run?.turnBaselineScreen || "")
+      .map((line) => normalizeComparableText(stripPromptPrefix(line)))
+      .filter((line) => line.length >= 12)
+  );
   const deltaLines = splitScreenLines(computeTurnDeltaScreen(run));
-  const delta = cleanTurnOutputLines(deltaLines, run);
+  const delta = cleanTurnOutputLines(deltaLines, run, { excludeComparableSet: baselineComparable });
   return delta.length > 0;
 }
 
-function cleanTurnOutputLines(lines, run) {
+function cleanTurnOutputLines(lines, run, options = {}) {
   const output = [];
   let dropNextSearchUrl = false;
   const promptComparable = normalizeComparableText(run?.currentTurnPromptText || "");
+  const excludeComparableSet = options?.excludeComparableSet instanceof Set ? options.excludeComparableSet : null;
   const seen = new Set();
 
   for (const rawLine of lines) {
@@ -2997,6 +3473,7 @@ function cleanTurnOutputLines(lines, run) {
 
     const lineKey = normalizeComparableText(normalized);
     if (!lineKey) continue;
+    if (excludeComparableSet && lineKey.length >= 12 && excludeComparableSet.has(lineKey)) continue;
     if (output.length && output[output.length - 1] === normalized) continue;
     if (seen.has(`recent:${lineKey}`) && output.length && output[output.length - 1] !== "") continue;
 
@@ -3022,15 +3499,28 @@ function cleanTurnOutputLines(lines, run) {
 function buildTurnResultTwoLiner(run) {
   const primaryLines = extractTurnSegmentFromPrompt(run);
   const primary = cleanTurnOutputLines(primaryLines, run);
-  if (primary.length) return primary.join("\n");
+  if (primary.length) {
+    return normalizeTurnOutput(primary.join("\n"), {
+      prompt: run?.currentTurnPromptText || "",
+      maxLines: BOT_CHAT_ESSENTIAL_MAX_LINES,
+      maxChars: BOT_CHAT_ESSENTIAL_MAX_CHARS,
+    });
+  }
 
+  const baselineComparable = new Set(
+    splitScreenLines(run?.turnBaselineScreen || "")
+      .map((line) => normalizeComparableText(stripPromptPrefix(line)))
+      .filter((line) => line.length >= 12)
+  );
   const deltaLines = splitScreenLines(computeTurnDeltaScreen(run));
-  const delta = cleanTurnOutputLines(deltaLines, run);
-  if (delta.length) return delta.join("\n");
-
-  const tailLines = splitScreenLines(run?.screenTextFull || run?.screenText || "").slice(-80);
-  const tail = cleanTurnOutputLines(tailLines, run);
-  if (tail.length) return tail.join("\n");
+  const delta = cleanTurnOutputLines(deltaLines, run, { excludeComparableSet: baselineComparable });
+  if (delta.length) {
+    return normalizeTurnOutput(delta.join("\n"), {
+      prompt: run?.currentTurnPromptText || "",
+      maxLines: BOT_CHAT_ESSENTIAL_MAX_LINES,
+      maxChars: BOT_CHAT_ESSENTIAL_MAX_CHARS,
+    });
+  }
 
   if (!run?.currentTurnSuppressOutput) {
     return "Kein klarer Ergebnis-Text erkannt.";
@@ -3212,16 +3702,13 @@ function suppressCurrentReplyPrompt(run, reason) {
 function codexRuntimeCommandMessage(run) {
   const lines = [
     `Codex started (${run.sessionName}) [${CHAT_PIPELINE_VERSION}].`,
-    "Quick controls:",
-    "- text or /ask <text> -> send input",
-    "- /sh <command> or !<command> -> run shell (Smart-Mix)",
-    "- /enter | /raw <text>",
-    "- /status | /stopcodex | /panel",
-    "- /help for full command list",
+    "Kommandos:",
+    "- /stopcodex",
+    "- /livecodex (/panel)",
     `Profile auto-load: ${run.personalityStatus || "n/a"}`,
   ];
   if (BOT_ENABLE_RESTART_COMMAND) {
-    lines.splice(5, 0, "- /restartbot");
+    lines.splice(3, 0, "- /restartbot");
   }
   return lines.join("\n");
 }
@@ -3465,7 +3952,7 @@ async function cancelShellRun(reason) {
 async function startShellCommand(chatId, command) {
   ensureShell();
   if (activeRun) {
-    await sendMessage(chatId, "A session is already running. Use /status or /stopcodex.");
+    await sendMessage(chatId, "A session is already running. Use /stopcodex or /livecodex.");
     return;
   }
 
@@ -4157,12 +4644,15 @@ async function enforceCodexCancel(run, reason) {
 
 async function startCodexTmuxRun(chatId, command, options = {}) {
   if (activeRun) {
-    await sendMessage(chatId, "A session is already running. Use /status or /stopcodex.");
+    await sendMessage(chatId, "A session is already running. Use /stopcodex or /livecodex.");
     return;
   }
 
   if (!tmuxAvailable) {
     await sendMessage(chatId, "tmux backend is unavailable. Please check tmux installation/config.");
+    return;
+  }
+  if (isCodexCommand(command) && !(await ensureCodexLoginReady(chatId, { silent: false }))) {
     return;
   }
 
@@ -4259,23 +4749,20 @@ function startMessage() {
   const lines = [
     `Bereit. Ich bin ${assistantDisplayName()}.`,
     "",
-    "Schnellstart:",
-    "- /codexstart oder /ask <text>",
-    "- /sh <command> oder !<command> fuer Shell",
-    "- /panel, /projects, /status",
-    "- /stopcodex (oder /cancel)",
-    "- /timer, /remind, /daily, /reminders",
-    "- /voice",
+    "Verfuegbare Kommandos:",
+    "- /startcodex",
+    "- /stopcodex",
+    "- /livecodex (/panel)",
+    "- /persona (show/switch personality preset)",
     "",
-    "Mehr Details: /help",
+    "Normaler Text geht direkt an Codex.",
     `Chat-Pipeline: ${CHAT_PIPELINE_VERSION}`,
     `CWD: ${lastKnownCwd}`,
     `Codex backend: ${BOT_CODEX_BACKEND}`,
-    `Voice: ${buildVoiceReadiness().reason}`,
     `Mini App: ${webApp.ok ? "ready" : webApp.reason}`,
   ];
   if (BOT_ENABLE_RESTART_COMMAND) {
-    lines.splice(10, 0, "- /restartbot");
+    lines.splice(6, 0, "- /restartbot");
   }
   return lines.join("\n");
 }
@@ -4284,30 +4771,19 @@ function helpMessage() {
   const webApp = getWebAppReadiness();
   const lines = [
     "Befehle:",
-    "- /start",
-    "- /setupassistant",
-    "- /codexstart",
-    "- /ask <text>",
-    "- /sh <command> (Shell, Smart-Mix)",
-    "- /panel, /panelstatus",
-    "- /projects",
-    "- /voice",
-    "- /timer <dauer> <text>",
-    "- /remind <hh:mm> <text>",
-    "- /daily <hh:mm> <text>",
-    "- /terminal <hh:mm>",
-    "- /reminders, /remindoff <id>",
-    "- /status, /pwd, /stopcodex, /cancel",
+    "- /startcodex",
+    "- /stopcodex",
+    "- /livecodex (/panel)",
+    "- /persona (show/switch personality preset)",
     "",
     "Modi:",
-    "- Idle: normaler Text = Shell-Command",
+    "- Idle: normaler Text = neue Codex-Anfrage",
     "- Laufende Codex-Session: normaler Text = Eingabe an Codex",
-    "- Voice/Audio: wird transkribiert und wie Text verarbeitet",
     "",
     `Mini App: ${webApp.ok ? "ready" : webApp.reason}`,
   ];
   if (BOT_ENABLE_RESTART_COMMAND) {
-    lines.splice(14, 0, "- /restartbot");
+    lines.splice(4, 0, "- /restartbot");
   }
   return lines.join("\n");
 }
@@ -4332,15 +4808,11 @@ async function sendAsciiBanner(chatId) {
 
 async function sendStartCodexPrompt(chatId) {
   const webApp = getWebAppReadiness();
-  const keyboard = [
-    [{ text: "Start Codex", callback_data: "start_codex" }],
-    [{ text: "Previous Sessions", callback_data: "recent_projects" }],
-    [{ text: "Skip", callback_data: "skip_codex" }],
-  ];
+  const keyboard = [[{ text: "Startcodex", callback_data: "start_codex" }]];
   if (webApp.ok) {
-    keyboard.push([{ text: "Open Live Panel", web_app: { url: webApp.launchUrl } }]);
+    keyboard.push([{ text: "LiveCodex", web_app: { url: webApp.launchUrl } }]);
   }
-  await sendMessage(chatId, "What should I start?", {
+  await sendMessage(chatId, "Was soll losgehn?", {
     reply_markup: {
       inline_keyboard: keyboard,
     },
@@ -4395,6 +4867,9 @@ async function maybeAutoStartCodexOnStartup(chatId, options = {}) {
     await sendMessage(chatId, "Auto-start skipped: tmux is not available.");
     return false;
   }
+  if (!(await ensureCodexLoginReady(chatId, { silent: false }))) {
+    return false;
+  }
 
   if (force) {
     await sendMessage(chatId, "Restart complete. Starting Codex automatically...");
@@ -4424,6 +4899,13 @@ async function sendStartupFlow() {
   } else {
     await sendMessage(startupChatId, "Bot started on your Mac.");
   }
+  const codexLoginReady = await ensureCodexLoginReady(startupChatId, { silent: false });
+  if (!codexLoginReady) {
+    if (BOT_STARTUP_SEND_PANEL) {
+      await sendPanelButton(startupChatId);
+    }
+    return;
+  }
   if (!forceCodexAfterRestart) {
     const promptedOnboarding = await maybePromptProfileOnFirstStart(startupChatId);
     if (promptedOnboarding) {
@@ -4441,7 +4923,7 @@ async function sendStartupFlow() {
     await sendStartCodexPrompt(startupChatId);
   }
   if (!autoStarted && forceCodexAfterRestart) {
-    await sendMessage(startupChatId, "Restart finished, but Codex could not auto-start. Use /codexstart.");
+    await sendMessage(startupChatId, "Restart finished, but Codex could not auto-start. Use /startcodex.");
   }
 
   if (BOT_STARTUP_SEND_PANEL) {
@@ -4539,6 +5021,14 @@ function isRestartCommand(text) {
   if (/^\/restartbot(?:@[a-z0-9_]+)?$/i.test(lowered)) return true;
   if (/^\/restart(?:@[a-z0-9_]+)?$/i.test(lowered)) return true;
   return false;
+}
+
+function isStartCodexCommand(text) {
+  return /^\/(?:startcodex|codexstart)(?:@[a-z0-9_]+)?$/i.test(String(text || "").trim());
+}
+
+function isLiveCodexCommand(text) {
+  return /^\/(?:livecodex|panel)(?:@[a-z0-9_]+)?$/i.test(String(text || "").trim());
 }
 
 async function handleMiniAppInput(rawText) {
@@ -4645,7 +5135,7 @@ async function handleMiniAppInput(rawText) {
       return { ok: true, action: "codex_input" };
     }
 
-    if (lowered === "/codexstart") {
+    if (isStartCodexCommand(lowered)) {
       if (BOT_CODEX_BACKEND !== "tmux") {
         finishCommandTrace(trace, "command_failed", { reason: "codex_backend_not_tmux" });
         return { ok: false, error: "codex_backend_not_tmux" };
@@ -4681,7 +5171,7 @@ async function handleMiniAppInput(rawText) {
     }
 
     finishCommandTrace(trace, "command_failed", { reason: "no_active_codex" });
-    return { ok: false, error: "no_active_codex", hint: "send /codexstart first" };
+    return { ok: false, error: "no_active_codex", hint: "send /startcodex first" };
   } catch (err) {
     finishCommandTrace(trace, "command_failed", { reason: "exception", error: trimErrorMessage(err) });
     await sendMessage(chatId, `Command failed (${trace.id}): ${trimErrorMessage(err)}`);
@@ -4752,23 +5242,9 @@ async function configureMiniAppMenuButton() {
 async function configureTelegramCommands() {
   try {
     await bot.setMyCommands([
-      { command: "start", description: "Show help and start options" },
-      { command: "help", description: "Show command reference" },
-      { command: "setupassistant", description: "Set name, tone and preferences" },
-      { command: "codexstart", description: "Start a Codex session" },
-      { command: "ask", description: "Send prompt directly to Codex" },
-      { command: "codexskip", description: "Skip auto-start prompt" },
-      { command: "panel", description: "Send mini app button" },
-      { command: "panelstatus", description: "Show mini app status" },
-      { command: "projects", description: "Show recent projects" },
-      { command: "voice", description: "Show voice transcription status" },
-      { command: "timer", description: "Start timer, e.g. /timer 25m break" },
-      { command: "remind", description: "One-time reminder, /remind 18:30 text" },
-      { command: "daily", description: "Daily reminder, /daily 09:00 text" },
-      { command: "reminders", description: "List active reminders" },
-      { command: "status", description: "Show current status" },
-      { command: "pwd", description: "Show current working directory" },
+      { command: "startcodex", description: "Start Codex" },
       { command: "stopcodex", description: "Stop active codex session" },
+      { command: "livecodex", description: "Open Codex Live panel" },
       { command: "restartbot", description: "Restart this bot process" },
     ]);
   } catch (err) {
@@ -4916,11 +5392,12 @@ async function handleStatus(chatId) {
 
 async function maybePromptProfileOnFirstStart(chatId) {
   if (isUserProfileComplete(userProfile)) return false;
+  if (!(await ensureCodexLoginReady(chatId, { silent: false }))) return false;
   const started = startProfileOnboarding(chatId, false);
   if (!started) return false;
   await sendMessage(
     chatId,
-    "Kurzes Setup beim ersten Start. Ich frage dich jetzt 4 Dinge: dein Name, mein Name, Kommunikationsstil, eigene Preferences."
+    "Kurzes Setup beim ersten Start. Du waehlst zuerst `schenni` oder `custom` und danach fuehre ich dich durch die passenden Schritte."
   );
   await sendOnboardingPrompt(chatId);
   return true;
@@ -4980,6 +5457,68 @@ async function createDailyReminder(chatId, hhmm, message) {
   return reminder;
 }
 
+function buildPersonaOverviewLines() {
+  const activeKey = normalizePersonaPreset(userProfile?.personaPreset || "") || "custom";
+  const activeLabel = personaPresetLabel(activeKey);
+  const lines = [
+    `Aktive Persona: ${activeLabel} (${activeKey})`,
+    "Verfuegbare Presets:",
+  ];
+  for (const entry of PERSONA_PRESET_DEFINITIONS) {
+    lines.push(`- ${entry.key}: ${entry.summary}`);
+  }
+  lines.push("Umschalten: /persona <preset>");
+  lines.push("Beispiel: /persona showman-en");
+  return lines;
+}
+
+async function switchPersonaPreset(chatId, presetInput) {
+  const preset = normalizePersonaPreset(presetInput);
+  if (!preset) {
+    await sendMessage(chatId, `Unbekanntes Preset: "${presetInput}".\n${buildPersonaOverviewLines().join("\n")}`);
+    return true;
+  }
+  if (!availablePersonaPresetKeys().includes(preset)) {
+    await sendMessage(chatId, `Preset nicht verfuegbar: "${preset}".`);
+    return true;
+  }
+
+  const ensured = ensurePersonaPresetFiles(preset);
+  if (!ensured.ok) {
+    await sendMessage(chatId, `Preset konnte nicht aktiviert werden: ${ensured.error || "init failed"}`);
+    return true;
+  }
+
+  const nextProfile = {
+    ...userProfile,
+    personaPreset: preset,
+    configuredAt: new Date().toISOString(),
+  };
+  if (preset === "schenni") {
+    if (!nextProfile.assistantName) nextProfile.assistantName = "Schenni";
+    if (!nextProfile.tone) nextProfile.tone = "leger";
+    if (!nextProfile.preferences) {
+      nextProfile.preferences = "Kurz, keck und ostdeutsch. Bei komplexen Themen kompakt und strukturiert.";
+    }
+  }
+  const completeCandidate = {
+    ...nextProfile,
+    setupCompleted: Boolean(nextProfile.setupCompleted),
+  };
+  if (!completeCandidate.setupCompleted && isUserProfileComplete(completeCandidate)) {
+    completeCandidate.setupCompleted = true;
+  }
+
+  userProfile = completeCandidate;
+  const syncResult = applyUserProfileToPersonality();
+  const syncInfo = syncResult.ok ? "Persona-Dateien aktualisiert." : `Profil lokal gespeichert, Sync-Fehler: ${syncResult.error}`;
+  await sendMessage(
+    chatId,
+    `Persona aktiv: ${personaPresetLabel(preset)} (${preset}). ${syncInfo}`
+  );
+  return true;
+}
+
 function activeReminderLines() {
   const active = listActiveReminders();
   if (!active.length) return ["Keine aktiven Erinnerungen."];
@@ -5001,10 +5540,34 @@ async function maybeHandleReminderCommands(chatId, text) {
   }
 
   if (lowered === "/setupassistant") {
+    if (!(await ensureCodexLoginReady(chatId, { silent: false }))) {
+      return true;
+    }
     startProfileOnboarding(chatId, true);
-    await sendMessage(chatId, "Setup gestartet. Du kannst jederzeit mit /cancel abbrechen.");
+    await sendMessage(chatId, "Setup gestartet (Preset-Wahl + Persona). Du kannst jederzeit mit /cancel abbrechen.");
     await sendOnboardingPrompt(chatId);
     return true;
+  }
+
+  const personaMatch = /^\/(?:persona|personality)(?:\s+([\s\S]+))?$/i.exec(normalized);
+  if (personaMatch) {
+    const argRaw = String(personaMatch[1] || "").trim();
+    const argLower = argRaw.toLowerCase();
+    if (!argRaw || argLower === "list" || argLower === "help" || argLower === "show") {
+      await sendMessage(chatId, buildPersonaOverviewLines().join("\n"));
+      return true;
+    }
+    if (argLower === "current" || argLower === "status") {
+      const activeKey = normalizePersonaPreset(userProfile?.personaPreset || "") || "custom";
+      await sendMessage(chatId, `Aktive Persona: ${personaPresetLabel(activeKey)} (${activeKey})`);
+      return true;
+    }
+    const effectiveArg = argLower.startsWith("set ") ? argRaw.slice(4).trim() : argRaw;
+    if (!effectiveArg) {
+      await sendMessage(chatId, "Bitte gib ein Preset an. Beispiel: /persona schenni");
+      return true;
+    }
+    return switchPersonaPreset(chatId, effectiveArg);
   }
 
   const timer = parseTimerCommandInput(normalized);
@@ -5132,7 +5695,7 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
 
   if (normalized === "/start" || lowered === "start") {
     await sendMessage(chatId, startMessage());
-    await sendMessage(chatId, "Slack quick start: /codexstart | /ask <text> | /status | /stopcodex");
+    await sendMessage(chatId, "Slack quick start: /startcodex | /stopcodex | /livecodex");
     return;
   }
 
@@ -5141,9 +5704,9 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
     return;
   }
 
-  if (lowered === "/codexstart") {
+  if (isStartCodexCommand(lowered)) {
     if (activeRun) {
-      await sendMessage(chatId, "A session is already running. Use /status or /stopcodex.");
+      await sendMessage(chatId, "A session is already running. Use /stopcodex or /livecodex.");
       return;
     }
     if (BOT_CODEX_BACKEND === "tmux") {
@@ -5154,7 +5717,7 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
     return;
   }
 
-  if (lowered === "/panel") {
+  if (isLiveCodexCommand(lowered)) {
     await sendPanelButton(chatId);
     return;
   }
@@ -5246,7 +5809,7 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
     }
 
     if (normalized.startsWith("/")) {
-      await sendMessage(chatId, "Unknown runtime command. /status | /enter | /raw <text> | /stopcodex");
+      await sendMessage(chatId, "Unbekannter Befehl. Erlaubt: /stopcodex | /livecodex");
       return;
     }
 
@@ -5286,7 +5849,7 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
   }
 
   if (activeRun && activeRun.mode === "shell_command") {
-    await sendMessage(chatId, "A shell command is already running. Use /status or /stopcodex.");
+    await sendMessage(chatId, "A shell command is already running. Use /stopcodex.");
     return;
   }
 
@@ -5303,7 +5866,7 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
   }
 
   if (intent.type === "command") {
-    await sendMessage(chatId, "Unknown command. Use /help.");
+    await sendMessage(chatId, "Unbekannter Befehl. Nutz /startcodex, /stopcodex, /livecodex oder /restartbot.");
     return;
   }
 
@@ -5639,9 +6202,9 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  if (lowered === "/codexstart") {
+  if (isStartCodexCommand(lowered)) {
     if (activeRun) {
-      await sendMessage(chatId, "A session is already running. Use /status or /stopcodex.");
+      await sendMessage(chatId, "A session is already running. Use /stopcodex or /livecodex.");
       return;
     }
     if (BOT_CODEX_BACKEND === "tmux") {
@@ -5657,7 +6220,7 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  if (lowered === "/panel") {
+  if (isLiveCodexCommand(lowered)) {
     await sendPanelButton(chatId);
     return;
   }
@@ -5734,7 +6297,7 @@ bot.on("message", async (msg) => {
     }
 
     if (normalized.startsWith("/")) {
-      await sendMessage(chatId, "Unknown runtime command. /status | /enter | /raw <text> | /stopcodex");
+      await sendMessage(chatId, "Unbekannter Befehl. Erlaubt: /stopcodex | /livecodex");
       return;
     }
 
@@ -5779,7 +6342,7 @@ bot.on("message", async (msg) => {
   }
 
   if (activeRun && activeRun.mode === "shell_command") {
-    await sendMessage(chatId, "A shell command is already running. Use /status or /stopcodex.");
+    await sendMessage(chatId, "A shell command is already running. Use /stopcodex.");
     return;
   }
 
@@ -5796,7 +6359,7 @@ bot.on("message", async (msg) => {
   }
 
   if (intent.type === "command") {
-    await sendMessage(chatId, "Unknown command. Use /help.");
+    await sendMessage(chatId, "Unbekannter Befehl. Nutz /startcodex, /stopcodex, /livecodex oder /restartbot.");
     return;
   }
 
