@@ -89,6 +89,8 @@ const BOT_CODEX_READY_TIMEOUT_MS = Number.isFinite(Number(process.env.BOT_CODEX_
   ? Math.max(1000, Number(process.env.BOT_CODEX_READY_TIMEOUT_MS))
   : 15000;
 const BOT_CODEX_BACKEND = String(process.env.BOT_CODEX_BACKEND || "tmux").toLowerCase();
+const BOT_CODEX_MODEL_DEFAULT = String(process.env.BOT_CODEX_MODEL || process.env.CODEX_MODEL || "gpt-5.4").trim() || "gpt-5.4";
+const BOT_CODEX_REASONING_DEFAULT = String(process.env.BOT_CODEX_REASONING_EFFORT || "standard").trim().toLowerCase() || "standard";
 const BOT_TMUX_BIN = process.env.BOT_TMUX_BIN || "tmux";
 const BOT_PROMPT_ON_START = String(process.env.BOT_PROMPT_ON_START || "1") !== "0";
 const BOT_AUTO_START_CODEX = String(process.env.BOT_AUTO_START_CODEX || "1") !== "0";
@@ -184,8 +186,8 @@ const MAX_EVENT_LOG = 200;
 const REPLY_BUTTON_COOLDOWN_MS = 45000;
 const TELEGRAM_CONFLICT_WINDOW_MS = 60_000;
 const TELEGRAM_CONFLICT_MAX = 5;
-const CHAT_PIPELINE_VERSION = "V0.2(schenni)";
-const CHAT_PIPELINE_RELEASE_LABEL = "chat_pipeline_v0_2_schenni";
+const CHAT_PIPELINE_VERSION = "V2(schenni)";
+const CHAT_PIPELINE_RELEASE_LABEL = "chat_pipeline_v2_schenni";
 const TELEGRAM_INIT_HEADER = "x-telegram-init-data";
 const MINIAPP_AUTH_MAX_AGE_SECONDS = 24 * 60 * 60;
 const MINIAPP_INPUT_MAX_CHARS = 4000;
@@ -203,6 +205,7 @@ const PTY_ENTER = "\r";
 const RECENT_PROJECTS_PATH = path.join(__dirname, "data", "recent-projects.json");
 const USER_PROFILE_PATH = path.join(__dirname, "data", "user-profile.json");
 const USER_PREFERENCE_HINTS_PATH = path.join(__dirname, "data", "user-preference-hints.json");
+const MODEL_PROFILE_PATH = path.join(__dirname, "data", "model-profile.json");
 const REMINDERS_PATH = path.join(__dirname, "data", "reminders.json");
 const MAX_RECENT_PROJECTS = 12;
 const MAX_REMINDER_TEXT_CHARS = 280;
@@ -921,6 +924,149 @@ function writeRecentProjects(projects) {
   }
 }
 
+const MODEL_ALIASES = new Map([
+  ["5.4", "gpt-5.4"],
+  ["gpt-5.4", "gpt-5.4"],
+  ["5.3-codex", "gpt-5.3-codex"],
+  ["gpt-5.3-codex", "gpt-5.3-codex"],
+]);
+
+function normalizeModelName(value) {
+  const lowered = String(value || "").trim().toLowerCase();
+  if (!lowered) return "";
+  if (MODEL_ALIASES.has(lowered)) return MODEL_ALIASES.get(lowered) || "";
+  if (/^gpt-[a-z0-9._-]+$/.test(lowered)) return lowered;
+  return "";
+}
+
+function normalizeReasoningEffort(value) {
+  const lowered = String(value || "").trim().toLowerCase();
+  if (!lowered) return "";
+  if (["high", "deep", "max"].includes(lowered)) return "high";
+  if (["standard", "std", "default", "medium", "normal"].includes(lowered)) return "standard";
+  return "";
+}
+
+function reasoningEffortCliValue(value) {
+  return normalizeReasoningEffort(value) === "high" ? "high" : "medium";
+}
+
+function defaultModelProfile() {
+  return {
+    model: normalizeModelName(BOT_CODEX_MODEL_DEFAULT) || "gpt-5.4",
+    reasoningEffort: normalizeReasoningEffort(BOT_CODEX_REASONING_DEFAULT) || "standard",
+    updatedAt: "",
+    schemaVersion: 1,
+  };
+}
+
+function readModelProfile() {
+  try {
+    if (!fs.existsSync(MODEL_PROFILE_PATH)) return defaultModelProfile();
+    const raw = fs.readFileSync(MODEL_PROFILE_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return defaultModelProfile();
+    return {
+      ...defaultModelProfile(),
+      model: normalizeModelName(parsed.model || "") || defaultModelProfile().model,
+      reasoningEffort: normalizeReasoningEffort(parsed.reasoningEffort || "") || defaultModelProfile().reasoningEffort,
+      updatedAt: String(parsed.updatedAt || "").trim(),
+      schemaVersion: 1,
+    };
+  } catch (err) {
+    console.warn("Failed to read model profile:", err.message);
+    return defaultModelProfile();
+  }
+}
+
+function writeModelProfile(profile) {
+  const defaults = defaultModelProfile();
+  const normalized = {
+    ...defaults,
+    ...(profile || {}),
+    model: normalizeModelName(profile?.model || "") || defaults.model,
+    reasoningEffort: normalizeReasoningEffort(profile?.reasoningEffort || "") || defaults.reasoningEffort,
+    updatedAt: String(profile?.updatedAt || "").trim() || new Date().toISOString(),
+    schemaVersion: 1,
+  };
+  try {
+    ensureParentDir(MODEL_PROFILE_PATH);
+    fs.writeFileSync(MODEL_PROFILE_PATH, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  } catch (err) {
+    console.warn("Failed to write model profile:", err.message);
+  }
+  return normalized;
+}
+
+function currentModelProfile() {
+  if (!modelProfile) modelProfile = readModelProfile();
+  return modelProfile;
+}
+
+function modelProfileSummary(profile = currentModelProfile()) {
+  const model = normalizeModelName(profile?.model || "") || defaultModelProfile().model;
+  const effort = normalizeReasoningEffort(profile?.reasoningEffort || "") || defaultModelProfile().reasoningEffort;
+  return `${model} (${effort})`;
+}
+
+function parseModelSwitchInput(rawInput) {
+  const raw = String(rawInput || "").trim();
+  if (!raw) return { ok: true, showOnly: true };
+  const lowered = raw.toLowerCase();
+  if (["list", "help", "show", "status", "current"].includes(lowered)) {
+    return { ok: true, showOnly: true };
+  }
+  const tokens = raw
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  let model = "";
+  let reasoningEffort = "";
+  for (const token of tokens) {
+    const parsedModel = normalizeModelName(token);
+    if (parsedModel) {
+      model = parsedModel;
+      continue;
+    }
+    const parsedEffort = normalizeReasoningEffort(token);
+    if (parsedEffort) {
+      reasoningEffort = parsedEffort;
+      continue;
+    }
+    return {
+      ok: false,
+      error: `Unbekannter model-Parameter: "${token}"`,
+    };
+  }
+  if (!model && !reasoningEffort) {
+    return {
+      ok: false,
+      error: "Bitte gib mindestens ein Ziel an: 5.4, 5.3-codex, high oder standard.",
+    };
+  }
+  return {
+    ok: true,
+    showOnly: false,
+    model,
+    reasoningEffort,
+  };
+}
+
+function buildModelHelpLines(profile = currentModelProfile()) {
+  return [
+    `Aktives Modellprofil: ${modelProfileSummary(profile)}`,
+    "Optionen:",
+    "- model: 5.4 | 5.3-codex",
+    "- effort: high | standard",
+    "Beispiele:",
+    "- /model 5.4",
+    "- /model 5.3-codex",
+    "- /model high",
+    "- /model standard",
+    "- /model 5.4 high",
+  ];
+}
+
 function defaultUserProfile() {
   return {
     ownerName: "",
@@ -1427,6 +1573,39 @@ function truncateTail(text, maxChars) {
 
 function shellSingleQuote(value) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function commandStartsCodex(command) {
+  const first = String(command || "").trim().split(/\s+/)[0] || "";
+  if (!first) return false;
+  if (first === "codex") return true;
+  return /(^|\/)codex$/.test(first);
+}
+
+function commandHasModelFlag(command) {
+  return /(^|\s)(-m|--model)\s+\S+/i.test(String(command || ""));
+}
+
+function commandHasReasoningConfig(command) {
+  const raw = String(command || "");
+  return /(^|\s)-c\s+['"]?(model_reasoning_effort|reasoning_effort)\s*=/i.test(raw);
+}
+
+function applyModelProfileToCodexCommand(command, profile = currentModelProfile()) {
+  const raw = String(command || "").trim() || "codex";
+  if (!commandStartsCodex(raw)) return raw;
+
+  const model = normalizeModelName(profile?.model || "") || defaultModelProfile().model;
+  const reasoningEffort = normalizeReasoningEffort(profile?.reasoningEffort || "") || defaultModelProfile().reasoningEffort;
+
+  let next = raw;
+  if (!commandHasModelFlag(next)) {
+    next += ` -m ${shellSingleQuote(model)}`;
+  }
+  if (!commandHasReasoningConfig(next)) {
+    next += ` -c model_reasoning_effort=${shellSingleQuote(reasoningEffortCliValue(reasoningEffort))}`;
+  }
+  return next;
 }
 
 function resolveWebAppLaunchUrl(rawUrl) {
@@ -2332,6 +2511,7 @@ let isRestartingBot = false;
 let runtimeWebAppUrl = BOT_WEBAPP_URL;
 let startupTunnelNotice = "";
 let userProfile = readUserProfile();
+let modelProfile = readModelProfile();
 let preferenceHintsState = readPreferenceHintsState();
 let onboardingState = null;
 let reminderState = readReminderState();
@@ -3215,13 +3395,15 @@ function codexRuntimeCommandMessage(run) {
     "Quick controls:",
     "- text or /ask <text> -> send input",
     "- /sh <command> or !<command> -> run shell (Smart-Mix)",
+    "- /model -> show/switch model profile",
     "- /enter | /raw <text>",
     "- /status | /stopcodex | /panel",
     "- /help for full command list",
+    `Model profile: ${modelProfileSummary()}`,
     `Profile auto-load: ${run.personalityStatus || "n/a"}`,
   ];
   if (BOT_ENABLE_RESTART_COMMAND) {
-    lines.splice(5, 0, "- /restartbot");
+    lines.splice(6, 0, "- /restartbot");
   }
   return lines.join("\n");
 }
@@ -4167,19 +4349,21 @@ async function startCodexTmuxRun(chatId, command, options = {}) {
   }
 
   const runCwd = resolveCwd(options.cwd || RESOLVED_BOT_CWD);
+  const selectedModelProfile = currentModelProfile();
+  const launchCommand = applyModelProfileToCodexCommand(command, selectedModelProfile);
   const sessionName = makeTmuxSessionName(chatId);
   try {
-    await tmux.startSession(BOT_TMUX_BIN, sessionName, runCwd, command);
+    await tmux.startSession(BOT_TMUX_BIN, sessionName, runCwd, launchCommand);
   } catch (err) {
     await sendMessage(chatId, `Failed to start codex tmux session: ${err.message}`);
     return;
   }
-  const recentEntry = rememberRecentProject(command, runCwd);
+  const recentEntry = rememberRecentProject(launchCommand, runCwd);
 
   const run = {
     mode: "codex_tmux",
     chatId,
-    command,
+    command: launchCommand,
     sessionName,
     cwd: runCwd,
     recentProjectId: recentEntry ? recentEntry.id : null,
@@ -4216,6 +4400,10 @@ async function startCodexTmuxRun(chatId, command, options = {}) {
     personalityApplied: false,
     personalityStatus: BOT_PERSONALITY_AUTO_APPLY ? "pending" : "disabled",
     personalityPath: resolvePersonalityFilePath(BOT_PERSONALITY_FILE),
+    modelProfileAtStart: {
+      model: selectedModelProfile.model,
+      reasoningEffort: selectedModelProfile.reasoningEffort,
+    },
     promptReady: false,
     promptReadyPromise: null,
     cancelRequested: false,
@@ -4261,6 +4449,7 @@ function startMessage() {
     "",
     "Schnellstart:",
     "- /codexstart oder /ask <text>",
+    "- /model (5.4 | 5.3-codex | high | standard)",
     "- /sh <command> oder !<command> fuer Shell",
     "- /panel, /projects, /status",
     "- /stopcodex (oder /cancel)",
@@ -4271,6 +4460,7 @@ function startMessage() {
     `Chat-Pipeline: ${CHAT_PIPELINE_VERSION}`,
     `CWD: ${lastKnownCwd}`,
     `Codex backend: ${BOT_CODEX_BACKEND}`,
+    `Modelprofil: ${modelProfileSummary()}`,
     `Voice: ${buildVoiceReadiness().reason}`,
     `Mini App: ${webApp.ok ? "ready" : webApp.reason}`,
   ];
@@ -4287,6 +4477,7 @@ function helpMessage() {
     "- /start",
     "- /setupassistant",
     "- /codexstart",
+    "- /model [5.4|5.3-codex|high|standard]",
     "- /ask <text>",
     "- /sh <command> (Shell, Smart-Mix)",
     "- /panel, /panelstatus",
@@ -4756,6 +4947,7 @@ async function configureTelegramCommands() {
       { command: "help", description: "Show command reference" },
       { command: "setupassistant", description: "Set name, tone and preferences" },
       { command: "codexstart", description: "Start a Codex session" },
+      { command: "model", description: "Switch model profile (5.4/5.3-codex/high/standard)" },
       { command: "ask", description: "Send prompt directly to Codex" },
       { command: "codexskip", description: "Skip auto-start prompt" },
       { command: "panel", description: "Send mini app button" },
@@ -4907,9 +5099,12 @@ async function handleStatus(chatId) {
 
   const elapsed = Date.now() - activeRun.startedAt;
   const eventTail = activeRun.events.slice(-6).join("\n") || "(no events yet)";
+  const runModelSummary = activeRun.modelProfileAtStart
+    ? modelProfileSummary(activeRun.modelProfileAtStart)
+    : modelProfileSummary();
   await sendMessage(
     chatId,
-    `Status: codex tmux running (${activeRun.sessionName}) for ${formatDuration(elapsed)}.\nRecent events:\n<pre>${escapeHtml(eventTail)}</pre>`,
+    `Status: codex tmux running (${activeRun.sessionName}) for ${formatDuration(elapsed)}.\nModel: ${runModelSummary}\nRecent events:\n<pre>${escapeHtml(eventTail)}</pre>`,
     { parse_mode: "HTML" }
   );
 }
@@ -5004,6 +5199,34 @@ async function maybeHandleReminderCommands(chatId, text) {
     startProfileOnboarding(chatId, true);
     await sendMessage(chatId, "Setup gestartet. Du kannst jederzeit mit /cancel abbrechen.");
     await sendOnboardingPrompt(chatId);
+    return true;
+  }
+
+  const modelMatch = /^\/model(?:\s+([\s\S]+))?$/i.exec(normalized);
+  if (modelMatch) {
+    const parsed = parseModelSwitchInput(modelMatch[1] || "");
+    if (!parsed.ok) {
+      await sendMessage(chatId, `${parsed.error}\n\n${buildModelHelpLines().join("\n")}`);
+      return true;
+    }
+    if (parsed.showOnly) {
+      await sendMessage(chatId, buildModelHelpLines().join("\n"));
+      return true;
+    }
+
+    const current = currentModelProfile();
+    const next = writeModelProfile({
+      ...current,
+      model: parsed.model || current.model,
+      reasoningEffort: parsed.reasoningEffort || current.reasoningEffort,
+      updatedAt: new Date().toISOString(),
+    });
+    modelProfile = next;
+
+    const note = activeRun && activeRun.mode === "codex_tmux" && !activeRun.done
+      ? " Laufende Session bleibt unveraendert; gilt ab naechster /codexstart."
+      : " Gilt ab sofort fuer neue Sessions.";
+    await sendMessage(chatId, `Modelprofil gesetzt: ${modelProfileSummary(next)}.${note}`);
     return true;
   }
 
@@ -5132,7 +5355,7 @@ async function handleSlackIncomingText(channelId, userId, rawText) {
 
   if (normalized === "/start" || lowered === "start") {
     await sendMessage(chatId, startMessage());
-    await sendMessage(chatId, "Slack quick start: /codexstart | /ask <text> | /status | /stopcodex");
+    await sendMessage(chatId, "Slack quick start: /codexstart | /model | /ask <text> | /status | /stopcodex");
     return;
   }
 

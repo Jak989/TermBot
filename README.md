@@ -59,6 +59,7 @@ Optional lernt TermBot zusaetzliche Praeferenz-Hinweise aus deinem Chat mit (`BO
 - `/start` Hilfe und Startpanel
 - `/setupassistant` Assistant-Profil einrichten
 - `/codexstart` Codex-Session starten
+- `/model` Modellprofil anzeigen/wechseln (`5.4`, `5.3-codex`, `high`, `standard`)
 - `/ask <text>` Prompt direkt an Codex
 - `/sh <command>` Shell-Command explizit ausfuehren (Smart-Mix)
 - `/projects` letzte Projekte/Sessions
@@ -84,6 +85,8 @@ Mindestens setzen in `.env`:
 Empfohlen fuer vollen Assistant-Betrieb:
 
 - `BOT_CODEX_BACKEND=tmux`
+- `BOT_CODEX_MODEL=gpt-5.4`
+- `BOT_CODEX_REASONING_EFFORT=standard` (`high` oder `standard`)
 - `BOT_CHAT_TYPING_ACTION=1` (Telegram zeigt "schreibt...")
 - `BOT_AUTO_START_CODEX=1`
 - `BOT_PROMPT_ON_START=1`
