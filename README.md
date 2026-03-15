@@ -82,6 +82,8 @@ npm run start
 Recommended stable defaults:
 
 - `BOT_CODEX_BACKEND=tmux`
+- `BOT_CODEX_MODEL=gpt-5.4`
+- `BOT_CODEX_REASONING_EFFORT=standard` (`high` or `standard`)
 - `BOT_AUTO_START_CODEX=1`
 - `BOT_PROMPT_ON_START=1`
 - `BOT_SINGLE_INSTANCE=1`
