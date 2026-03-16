@@ -5316,9 +5316,10 @@ async function sendStartupFlow() {
     await sendMessage(startupChatId, "Restart finished, but Codex could not auto-start. Use /startcodex.");
   }
 
-  // Avoid duplicate panel messages after auto-start:
+  // Avoid duplicate panel messages:
   // startCodexTmuxRun() already sends "Codex Live Panel (this run)".
-  if (BOT_STARTUP_SEND_PANEL && !autoStarted) {
+  const hasActiveCodexRun = Boolean(activeRun && activeRun.mode === "codex_tmux" && !activeRun.done);
+  if (BOT_STARTUP_SEND_PANEL && !autoStarted && !hasActiveCodexRun) {
     await sendPanelButton(startupChatId);
   }
 }
@@ -5632,42 +5633,55 @@ async function configureMiniAppMenuButton() {
 }
 
 async function configureTelegramCommands() {
+  const commands = [
+    { command: "start", description: "Show start and quick help" },
+    { command: "help", description: "Show command reference" },
+    { command: "setupassistant", description: "Run profile/persona setup" },
+    { command: "persona", description: "Show/switch personality preset" },
+    { command: "personality", description: "Alias for /persona" },
+    { command: "model", description: "Show/switch model profile" },
+    { command: "startcodex", description: "Start Codex" },
+    { command: "codexstart", description: "Alias for /startcodex" },
+    { command: "livecodex", description: "Open Codex Live panel" },
+    { command: "panel", description: "Alias for /livecodex" },
+    { command: "panelstatus", description: "Show mini app status" },
+    { command: "ask", description: "Ask Codex directly (/ask <text>)" },
+    { command: "sh", description: "Run shell command (/sh <cmd>)" },
+    { command: "projects", description: "Show recent project sessions" },
+    { command: "project", description: "Alias for /projects" },
+    { command: "recent", description: "Alias for /projects" },
+    { command: "recentprojects", description: "Alias for /projects" },
+    { command: "voice", description: "Show voice transcription status" },
+    { command: "status", description: "Show runtime status" },
+    { command: "pwd", description: "Show current working directory" },
+    { command: "timer", description: "Create timer (/timer 25m text)" },
+    { command: "remind", description: "One-time reminder (/remind 18:30 text)" },
+    { command: "daily", description: "Daily reminder (/daily 09:00 text)" },
+    { command: "terminal", description: "Quick terminal reminder" },
+    { command: "reminders", description: "List active reminders" },
+    { command: "remindoff", description: "Disable reminder (/remindoff <id>)" },
+    { command: "stopcodex", description: "Stop active codex session" },
+    { command: "cancel", description: "Alias for /stopcodex" },
+    { command: "enter", description: "Send Enter to active Codex turn" },
+    { command: "raw", description: "Send raw input to active Codex turn" },
+    { command: "codexskip", description: "Skip codex start prompt" },
+    { command: "restart", description: "Alias for /restartbot" },
+    { command: "restartbot", description: "Restart this bot process" },
+  ];
+
   try {
-    await bot.setMyCommands([
-      { command: "start", description: "Show start and quick help" },
-      { command: "help", description: "Show command reference" },
-      { command: "setupassistant", description: "Run profile/persona setup" },
-      { command: "persona", description: "Show/switch personality preset" },
-      { command: "personality", description: "Alias for /persona" },
-      { command: "model", description: "Show/switch model profile" },
-      { command: "startcodex", description: "Start Codex" },
-      { command: "codexstart", description: "Alias for /startcodex" },
-      { command: "livecodex", description: "Open Codex Live panel" },
-      { command: "panel", description: "Alias for /livecodex" },
-      { command: "panelstatus", description: "Show mini app status" },
-      { command: "ask", description: "Ask Codex directly (/ask <text>)" },
-      { command: "sh", description: "Run shell command (/sh <cmd>)" },
-      { command: "projects", description: "Show recent project sessions" },
-      { command: "project", description: "Alias for /projects" },
-      { command: "recent", description: "Alias for /projects" },
-      { command: "recentprojects", description: "Alias for /projects" },
-      { command: "voice", description: "Show voice transcription status" },
-      { command: "status", description: "Show runtime status" },
-      { command: "pwd", description: "Show current working directory" },
-      { command: "timer", description: "Create timer (/timer 25m text)" },
-      { command: "remind", description: "One-time reminder (/remind 18:30 text)" },
-      { command: "daily", description: "Daily reminder (/daily 09:00 text)" },
-      { command: "terminal", description: "Quick terminal reminder" },
-      { command: "reminders", description: "List active reminders" },
-      { command: "remindoff", description: "Disable reminder (/remindoff <id>)" },
-      { command: "stopcodex", description: "Stop active codex session" },
-      { command: "cancel", description: "Alias for /stopcodex" },
-      { command: "enter", description: "Send Enter to active Codex turn" },
-      { command: "raw", description: "Send raw input to active Codex turn" },
-      { command: "codexskip", description: "Skip codex start prompt" },
-      { command: "restart", description: "Alias for /restartbot" },
-      { command: "restartbot", description: "Restart this bot process" },
-    ]);
+    await bot.setMyCommands(commands);
+
+    const startupChatId = toTelegramChatId(resolveStartupChatId());
+    if (startupChatId !== null) {
+      const scope = { type: "chat", chat_id: startupChatId };
+      try {
+        await bot.deleteMyCommands({ scope });
+      } catch (_err) {
+        // Ignore stale scope cleanup errors.
+      }
+      await bot.setMyCommands(commands, { scope });
+    }
   } catch (err) {
     console.error("Failed to set bot commands:", err.message);
   }
