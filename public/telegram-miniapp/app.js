@@ -350,7 +350,7 @@ async function postInput(text) {
       renderSnapshot(body.snapshot);
     }
 
-    if (payloadText !== "/stopcodex" && payloadText !== "/cancel" && payloadText !== "/codexstart") {
+    if (payloadText !== "/stopcodex" && payloadText !== "/cancel" && payloadText !== "/startcodex") {
       els.promptInput.value = "";
     }
   } catch (_err) {
@@ -478,7 +478,7 @@ els.promptInput.addEventListener("keydown", async (event) => {
 });
 
 els.startBtn.addEventListener("click", async () => {
-  await postInput("/codexstart");
+  await postInput("/startcodex");
 });
 
 els.escBtn.addEventListener("click", async () => {

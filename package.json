@@ -18,9 +18,10 @@
     "bot:logs": "node scripts/codexbot-cli.js bot logs",
     "bot:doctor": "node scripts/bot-doctor.js",
     "bot:restart-test": "node scripts/bot-restart-test.js",
+    "test:chat-output": "node --test scripts/tests/chat-output.test.js",
     "test:miniapp": "node --test scripts/tests/miniapp-render.test.js",
     "test:runtime": "node --test scripts/tests/runtime-state.test.js",
-    "test": "npm run test:miniapp && npm run test:runtime",
+    "test": "npm run test:miniapp && npm run test:runtime && npm run test:chat-output",
     "bot:tunnel": "cloudflared tunnel --url http://127.0.0.1:8787",
     "postinstall": "node scripts/fix-node-pty-perms.js"
   },

@@ -10,12 +10,14 @@ WORKDIR /app
 
 # Base tools:
 # - tmux: required by BOT_CODEX_BACKEND=tmux
+# - build-essential: required to compile native Node modules such as node-pty
 # - python3: optional voice transcription helper dependency
 # - curl/ca-certificates: health checks and runtime probes
 # - tini: clean signal forwarding for container shutdown
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
+    build-essential \
     ca-certificates \
     curl \
     python3 \
