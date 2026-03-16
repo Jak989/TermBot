@@ -3518,6 +3518,17 @@ function splitScreenLines(text) {
 
 function findPromptAnchorIndex(lines, promptText = "") {
   const promptNorm = normalizeComparableText(promptText);
+  if (promptNorm) {
+    // Exact match first to handle short prompts like "hi" safely.
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const raw = String(lines[i] || "");
+      if (!/^\s*›\s/.test(raw)) continue;
+      const lineNorm = normalizeComparableText(stripPromptPrefix(raw));
+      if (!lineNorm) continue;
+      if (lineNorm === promptNorm) return i;
+    }
+  }
+
   const needles = [];
   if (promptNorm) {
     needles.push(promptNorm);
@@ -3565,6 +3576,12 @@ function findPromptAnchorIndex(lines, promptText = "") {
   }
 
   return fallback;
+}
+
+function shouldUseDeltaFallback(run) {
+  const promptComparable = normalizeComparableText(run?.currentTurnPromptText || "");
+  // Delta fallback is useful for substantial prompts, but too noisy on tiny prompts.
+  return promptComparable.length >= 16;
 }
 
 function findScreenLineOverlap(beforeLines, afterLines) {
@@ -3625,6 +3642,7 @@ function hasTurnOutputCandidate(run) {
   if (run?.currentTurnSuppressOutput) return true;
   const primary = cleanTurnOutputLines(extractTurnSegmentFromPrompt(run), run);
   if (primary.length) return true;
+  if (!shouldUseDeltaFallback(run)) return false;
   const baselineComparable = new Set(
     splitScreenLines(run?.turnBaselineScreen || "")
       .map((line) => normalizeComparableText(stripPromptPrefix(line)))
@@ -3812,6 +3830,13 @@ function buildTurnResultTwoLiner(run) {
       maxLines: BOT_CHAT_ESSENTIAL_MAX_LINES,
       maxChars: BOT_CHAT_ESSENTIAL_MAX_CHARS,
     });
+  }
+
+  if (!shouldUseDeltaFallback(run)) {
+    if (!run?.currentTurnSuppressOutput) {
+      return "Kein klarer Ergebnis-Text erkannt.";
+    }
+    return "";
   }
 
   const baselineComparable = new Set(
