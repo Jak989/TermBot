@@ -12,6 +12,22 @@ function isPrefixOnlyLine(line) {
   return /^(kurzfassung|zusammenfassung)\s*:?\s*$/i.test(value) || /^(i(?:ck|ch)\s+sach\s+ma|nu\s+pass\s+uff)\s*:?\s*$/i.test(value);
 }
 
+function isProgressMetaLine(line) {
+  const value = String(line || "").trim();
+  if (!value) return false;
+  if (/^[-–—]?\s*worked for\s+\d+\s*[smh]/i.test(value)) return true;
+  if (/^i(?:ch|ck)\s+(pr(?:ü|u|ue)fe|checke|schaue|recherchiere)\b.*\b(daten|quelle|vorhersage|direkt|f(?:[üu]r|uer)\s+morgen)\b/i.test(value)) {
+    return true;
+  }
+  return false;
+}
+
+function isSeparatorLine(line) {
+  const value = String(line || "").trim();
+  if (!value) return false;
+  return /^[-_=]{6,}$/.test(value) || /^[\u2500-\u257f]{4,}$/.test(value);
+}
+
 function isPersonalityLeakLine(line) {
   const value = String(line || "").trim();
   if (!value) return false;
@@ -108,6 +124,8 @@ function normalizeTurnOutput(rawOutput, options = {}) {
       droppingTemplateBlock = false;
     }
     if (isPrefixOnlyLine(line)) continue;
+    if (isProgressMetaLine(line)) continue;
+    if (isSeparatorLine(line)) continue;
     if (!firstContentHandled) {
       line = stripForcedLeadPrefix(line);
       if (!line) continue;

@@ -3486,6 +3486,7 @@ function isCodexUiNoiseLine(line, options = {}) {
     /^\(teil\s+\d+\/\d+\)\s*$/i,
     /^searched$/i,
     /^searched\s+/i,
+    /^[-–—]?\s*worked for\s+\d+\s*[smh]/i,
     /^profile source:\s*/i,
     /^#{1,6}\s*[a-d]\)\s*(pers[oö]nlicher assistent|projektmanager|developer|testing[- ]ingenieur)\b/i,
     /^(aufgabe|verhalten|output[- ]format|engineering[- ]regeln|test[- ]mindeststandard)\s*:?\s*$/i,
@@ -3497,6 +3498,7 @@ function isCodexUiNoiseLine(line, options = {}) {
     /^model:\s+loading\b/i,
     /^hi\.\s+what do you need\?$/i,
     /^hi\.?$/i,
+    /^i(?:ch|ck)\s+(pr(?:ü|u|ue)fe|checke|schaue|recherchiere)\b.*\b(daten|quelle|vorhersage|direkt|f(?:[üu]r|uer)\s+morgen)\b/i,
     /^\s*[│╭╮╰╯].*$/,
     /^p'? or visit https:\/\/chatgpt\.com\/codex/i,
   ];
@@ -3669,6 +3671,12 @@ function cleanTurnOutputLines(lines, run, options = {}) {
     }
     if (/^searched$/i.test(normalized)) {
       dropNextSearchUrl = true;
+      continue;
+    }
+    if (/^[-–—]?\s*worked for\s+\d+\s*[smh]/i.test(normalized)) {
+      // Progress marker from Codex tool/runtime block. Keep only content after it.
+      output.length = 0;
+      dropNextSearchUrl = false;
       continue;
     }
     if (dropNextSearchUrl && /^https?:\/\/\S+$/i.test(normalized)) {

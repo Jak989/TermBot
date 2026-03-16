@@ -55,3 +55,15 @@ test("legitimate project manager sentence is preserved", () => {
   const out = normalizeTurnOutput(raw, { prompt, maxLines: 4, maxChars: 220 });
   assert.equal(out, raw);
 });
+
+test("progress meta lines are removed from final chat output", () => {
+  const prompt = "morgen in obersendling";
+  const raw = [
+    "Ich pruefe das Wetter fuer Obersendling fuer morgen und ziehe die konkreten Daten direkt rein.",
+    "— Worked for 1m 11s",
+    "______________________________________",
+    "Morgen wird's in Obersendling kuehl: tagsueber um 8 C, nachts bis -2 C.",
+  ].join("\n");
+  const out = normalizeTurnOutput(raw, { prompt, maxLines: 4, maxChars: 220 });
+  assert.equal(out, "Morgen wird's in Obersendling kuehl: tagsueber um 8 C, nachts bis -2 C.");
+});
