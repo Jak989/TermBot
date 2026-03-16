@@ -5638,6 +5638,7 @@ async function configureTelegramCommands() {
       { command: "help", description: "Show command reference" },
       { command: "setupassistant", description: "Run profile/persona setup" },
       { command: "persona", description: "Show/switch personality preset" },
+      { command: "personality", description: "Alias for /persona" },
       { command: "model", description: "Show/switch model profile" },
       { command: "startcodex", description: "Start Codex" },
       { command: "codexstart", description: "Alias for /startcodex" },
@@ -5647,6 +5648,9 @@ async function configureTelegramCommands() {
       { command: "ask", description: "Ask Codex directly (/ask <text>)" },
       { command: "sh", description: "Run shell command (/sh <cmd>)" },
       { command: "projects", description: "Show recent project sessions" },
+      { command: "project", description: "Alias for /projects" },
+      { command: "recent", description: "Alias for /projects" },
+      { command: "recentprojects", description: "Alias for /projects" },
       { command: "voice", description: "Show voice transcription status" },
       { command: "status", description: "Show runtime status" },
       { command: "pwd", description: "Show current working directory" },
@@ -5658,7 +5662,10 @@ async function configureTelegramCommands() {
       { command: "remindoff", description: "Disable reminder (/remindoff <id>)" },
       { command: "stopcodex", description: "Stop active codex session" },
       { command: "cancel", description: "Alias for /stopcodex" },
+      { command: "enter", description: "Send Enter to active Codex turn" },
+      { command: "raw", description: "Send raw input to active Codex turn" },
       { command: "codexskip", description: "Skip codex start prompt" },
+      { command: "restart", description: "Alias for /restartbot" },
       { command: "restartbot", description: "Restart this bot process" },
     ]);
   } catch (err) {
