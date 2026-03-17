@@ -1,4 +1,4 @@
-# TermBot V0.2 (Schenni)
+# TermBot (Schenni)
 
 TermBot is a local Telegram bot that controls your terminal and a persistent Codex session on your machine.  
 Instead of just sending commands, you collaborate with an assistant in chat.
